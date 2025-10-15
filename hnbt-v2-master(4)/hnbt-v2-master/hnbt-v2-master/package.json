@@ -1,0 +1,32 @@
+{
+  "name": "hnbt-v2-purchase",
+  "version": "1.0.0",
+  "description": "抢购软件",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:proxy1": "node index.js --proxy 1",
+    "start:proxy2": "node index.js --proxy 2",
+    "help": "node index.js --help",
+    "ysf": "node ysf.js",
+    "ysf:10": "node ysf.js --time 10:00:00",
+    "ysf:proxy1": "node ysf.js --proxy 1",
+    "ysf:proxy2": "node ysf.js --proxy 2",
+    "ysf:test:smart": "node test-smart-purchase.js",
+    "ysf:test:concurrent": "node test-concurrent-requests.js",
+    "xiaomi": "node xiaomi.js",
+    "xiaomi:10": "node xiaomi.js --time 10:00:00",
+    "xiaomi:proxy1": "node xiaomi.js --proxy 1",
+    "xiaomi:proxy2": "node xiaomi.js --proxy 2",
+    "xiaomi:10:direct": "node xiaomi.js --mode direct --time 09:59:59",
+    "xiaomi:10:proxy": "node xiaomi.js --mode proxy --time 09:59:58",
+    "xiaomi:10:proxy1": "node xiaomi.js --mode proxy --proxy 1 --time 10:00:00",
+    "xiaomi:10:proxy2": "node xiaomi.js --mode proxy --proxy 2 --time 10:00:00",
+    "xiaomi:query": "node run-xiaomi-query"
+  },
+  "dependencies": {
+    "axios": "^1.5.0",
+    "https-proxy-agent": "^7.0.2"
+  },
+  "type": "module"
+} 

@@ -1,0 +1,23 @@
+[
+  {
+    "name": "tdy",
+    "phone": "17623076304",
+    "accId": "account_id_tdy",
+    "grabToken": "grab_token_tdy",
+    "uniqueId": "1",
+    "cookie": "route=3ee9b61decf80caa35f6fea8dafbca41; sensorsdata2015jssdkcross=%7B%22distinct_id%22%3A%22196f08a288c19b2-091deb59f7fe508-3c627b45-334836-196f08a288d1e67%22%2C%22first_id%22%3A%22%22%2C%22props%22%3A%7B%22%24latest_traffic_source_type%22%3A%22%E7%9B%B4%E6%8E%A5%E6%B5%81%E9%87%8F%22%2C%22%24latest_search_keyword%22%3A%22%E6%9C%AA%E5%8F%96%E5%88%B0%E5%80%BC_%E7%9B%B4%E6%8E%A5%E6%89%93%E5%BC%80%22%2C%22%24latest_referrer%22%3A%22%22%7D%2C%22identities%22%3A%22eyIkaWRlbnRpdHlfY29va2llX2lkIjoiMTk2ZjA4YTI4OGMxOWIyLTA5MWRlYjU5ZjdmZTUwOC0zYzYyN2I0NS0zMzQ4MzYtMTk2ZjA4YTI4OGQxZTY3In0%3D%22%2C%22history_login_id%22%3A%7B%22name%22%3A%22%22%2C%22value%22%3A%22%22%7D%2C%22%24device_id%22%3A%22196f08a288c19b2-091deb59f7fe508-3c627b45-334836-196f08a288d1e67%22%7D",
+    "xTingyun": "c=B|p35OnrDoP8k;x=dd59ef8475b541f4",
+    "appNo": "YJHX3C044025046",
+    "channelNo": "Q000101",
+    "token": "sh_097ad75b50adbfae012314b37e5140369b2a30006384e1b2e6f3088bfde4d95b_sh",
+    "areaCode": "500112",
+    "longitude": "106.5193283420139",
+    "latitude": "29.63534966362847",
+    "acquireType": "1",
+    "cateCode": "B01",
+    "activityId": "29",
+    "engGrade": null,
+    "coordType": "gcj02ll",
+    "gpsAreaCode": "500112"
+  }
+]
