@@ -278,65 +278,16 @@ class XiaomiSubsidyAcquirer {
         
         try {
             if (this.mode === 'proxy') {
-                // 代理模式：使用3个代理IP并发请求
-                console.log(`🎯 开始为账户 ${accountInfo.name}(${accountInfo.phone}) 代理模式并发获取补贴...`);
-                console.log(`📡 使用3个代理IP进行并发请求`);
+                // 代理模式：使用3个代理IP并发请求（无阻塞模式）
+                console.log(`🎯 开始为账户 ${accountInfo.name}(${accountInfo.phone}) 代理模式无阻塞并发获取补贴...`);
+                console.log(`📡 使用3个代理IP进行无阻塞并发请求`);
 
                 if (!proxyList || proxyList.length === 0) {
                     throw new Error('代理模式下需要提供代理IP列表');
                 }
 
-                // 并发执行3个请求，每个请求使用不同的代理IP
-                const promises = [];
-                for (let i = 0; i < Math.min(3, proxyList.length); i++) {
-                    const proxy = proxyList[i];
-                    promises.push(this.executeSingleRequest(accountInfo, proxy, i + 1));
-                }
-
-                // 等待所有请求完成
-                const results = await Promise.allSettled(promises);
-                
-                const duration = Date.now() - startTime;
-                console.log(`✅ 代理模式并发请求完成，总耗时: ${duration}ms`);
-
-                // 分析结果，找到第一个成功的请求
-                let successResult = null;
-                let errorMessages = [];
-                
-                results.forEach((result, index) => {
-                    if (result.status === 'fulfilled' && result.value) {
-                        if (result.value.success && !successResult) {
-                            successResult = result.value;
-                            console.log(`🎉 账户 ${accountInfo.name}: 第${index + 1}个代理请求成功！`);
-                        } else if (!result.value.success) {
-                            errorMessages.push(`代理${index + 1}: ${result.value.error || '请求失败'}`);
-                        }
-                    } else if (result.status === 'rejected') {
-                        errorMessages.push(`代理${index + 1}: ${result.reason?.message || '请求异常'}`);
-                    }
-                });
-
-                // 返回结果
-                if (successResult) {
-                    return successResult;
-                } else {
-                    // 如果没有成功，返回第一个失败的结果
-                    const firstResult = results.find(r => r.status === 'fulfilled' && r.value);
-                    if (firstResult) {
-                        return firstResult.value;
-                    } else {
-                        // 如果所有请求都失败，返回一个综合错误结果
-                        return {
-                            success: false,
-                            account: accountInfo,
-                            proxy: proxyList[0], // 使用第一个代理作为代表
-                            error: `代理模式并发${proxyList.length}次请求全部失败: ${errorMessages.join(', ')}`,
-                            duration: duration,
-                            timestamp: new Date().toISOString(),
-                            isNetworkError: true
-                        };
-                    }
-                }
+                // 无阻塞并发执行：使用Promise.race获取最快成功的结果
+                return await this.executeNonBlockingProxyRequests(accountInfo, proxyList, startTime);
 
             } else {
                 // 直连模式：单次请求，不并发
@@ -368,6 +319,190 @@ class XiaomiSubsidyAcquirer {
 
             return result;
         }
+    }
+
+    /**
+     * 无阻塞代理请求执行器（流式处理版本）
+     * @param {Object} accountInfo - 账户信息
+     * @param {Array} proxyList - 代理IP列表
+     * @param {number} startTime - 开始时间
+     * @returns {Promise<Object>} 请求结果
+     */
+    async executeNonBlockingProxyRequests(accountInfo, proxyList, startTime) {
+        const maxConcurrent = Math.min(3, proxyList.length);
+        const promises = [];
+        const requestResults = [];
+        let hasSuccess = false;
+        
+        // 创建所有并发请求
+        for (let i = 0; i < maxConcurrent; i++) {
+            const proxy = proxyList[i];
+            const promise = this.executeSingleRequest(accountInfo, proxy, i + 1)
+                .then(result => {
+                    // 立即处理成功结果
+                    if (result.success && !hasSuccess) {
+                        hasSuccess = true;
+                        console.log(`🎉 账户 ${accountInfo.name}: 第${i + 1}个代理请求成功！`);
+                        return { success: true, result, index: i, immediate: true };
+                    } else {
+                        requestResults[i] = result;
+                        return { success: false, result, index: i, immediate: false };
+                    }
+                })
+                .catch(error => {
+                    console.log(`❌ 账户 ${accountInfo.name}: 第${i + 1}个代理请求异常: ${error.message}`);
+                    requestResults[i] = {
+                        success: false,
+                        account: accountInfo,
+                        proxy: proxy,
+                        error: error.message,
+                        timestamp: new Date().toISOString(),
+                        isNetworkError: isNetworkError(error)
+                    };
+                    return { success: false, result: requestResults[i], index: i, immediate: false };
+                });
+            
+            promises.push(promise);
+        }
+
+        // 使用Promise.race等待第一个结果（成功或失败）
+        try {
+            const raceResult = await Promise.race(promises);
+            
+            if (raceResult.success && raceResult.immediate) {
+                // 有成功的请求，立即返回
+                const duration = Date.now() - startTime;
+                console.log(`✅ 账户 ${accountInfo.name} 无阻塞代理请求成功，总耗时: ${duration}ms`);
+                return raceResult.result;
+            }
+        } catch (error) {
+            console.log(`⚠️ 账户 ${accountInfo.name} Promise.race异常: ${error.message}`);
+        }
+
+        // 如果没有立即成功的结果，等待所有请求完成并返回最佳结果
+        console.log(`⏳ 账户 ${accountInfo.name} 等待所有代理请求完成...`);
+        const allResults = await Promise.allSettled(promises);
+        
+        const duration = Date.now() - startTime;
+        console.log(`✅ 账户 ${accountInfo.name} 所有代理请求完成，总耗时: ${duration}ms`);
+
+        // 分析所有结果，找到第一个成功的请求
+        let successResult = null;
+        let errorMessages = [];
+        
+        allResults.forEach((result, index) => {
+            if (result.status === 'fulfilled' && result.value) {
+                if (result.value.success && !successResult) {
+                    successResult = result.value.result;
+                } else if (!result.value.success) {
+                    errorMessages.push(`代理${index + 1}: ${result.value.result.error || '请求失败'}`);
+                }
+            } else if (result.status === 'rejected') {
+                errorMessages.push(`代理${index + 1}: ${result.reason?.message || '请求异常'}`);
+            }
+        });
+
+        // 返回结果
+        if (successResult) {
+            return successResult;
+        } else {
+            // 如果没有成功，返回第一个失败的结果
+            const firstResult = requestResults.find(r => r);
+            if (firstResult) {
+                return firstResult;
+            } else {
+                // 如果所有请求都失败，返回一个综合错误结果
+                return {
+                    success: false,
+                    account: accountInfo,
+                    proxy: proxyList[0], // 使用第一个代理作为代表
+                    error: `代理模式并发${proxyList.length}次请求全部失败: ${errorMessages.join(', ')}`,
+                    duration: duration,
+                    timestamp: new Date().toISOString(),
+                    isNetworkError: true
+                };
+            }
+        }
+    }
+
+    /**
+     * 超高速无阻塞代理请求执行器（实验性功能）
+     * @param {Object} accountInfo - 账户信息
+     * @param {Array} proxyList - 代理IP列表
+     * @param {number} startTime - 开始时间
+     * @returns {Promise<Object>} 请求结果
+     */
+    async executeUltraFastProxyRequests(accountInfo, proxyList, startTime) {
+        const maxConcurrent = Math.min(3, proxyList.length);
+        const promises = [];
+        let firstSuccess = null;
+        let completedCount = 0;
+        
+        // 创建所有并发请求
+        for (let i = 0; i < maxConcurrent; i++) {
+            const proxy = proxyList[i];
+            const promise = this.executeSingleRequest(accountInfo, proxy, i + 1)
+                .then(result => {
+                    completedCount++;
+                    if (result.success && !firstSuccess) {
+                        firstSuccess = result;
+                        console.log(`🚀 账户 ${accountInfo.name}: 第${i + 1}个代理超高速成功！`);
+                    }
+                    return result;
+                })
+                .catch(error => {
+                    completedCount++;
+                    console.log(`❌ 账户 ${accountInfo.name}: 第${i + 1}个代理请求异常: ${error.message}`);
+                    return {
+                        success: false,
+                        account: accountInfo,
+                        proxy: proxy,
+                        error: error.message,
+                        timestamp: new Date().toISOString(),
+                        isNetworkError: isNetworkError(error)
+                    };
+                });
+            
+            promises.push(promise);
+        }
+
+        // 使用Promise.race获取最快的结果
+        const raceResult = await Promise.race(promises);
+        
+        if (raceResult.success) {
+            const duration = Date.now() - startTime;
+            console.log(`⚡ 账户 ${accountInfo.name} 超高速代理请求成功，总耗时: ${duration}ms`);
+            return raceResult;
+        }
+
+        // 如果没有立即成功，等待所有完成
+        const allResults = await Promise.allSettled(promises);
+        const duration = Date.now() - startTime;
+        
+        // 找到第一个成功的结果
+        for (const result of allResults) {
+            if (result.status === 'fulfilled' && result.value.success) {
+                console.log(`✅ 账户 ${accountInfo.name} 代理请求成功，总耗时: ${duration}ms`);
+                return result.value;
+            }
+        }
+
+        // 返回第一个失败结果
+        const firstResult = allResults.find(r => r.status === 'fulfilled');
+        if (firstResult) {
+            return firstResult.value;
+        }
+
+        // 所有都失败
+        return {
+            success: false,
+            account: accountInfo,
+            proxy: proxyList[0],
+            error: '所有代理请求都失败',
+            duration: duration,
+            timestamp: new Date().toISOString(),
+            isNetworkError: true
+        };
     }
 
     /**
@@ -490,13 +625,13 @@ class XiaomiSubsidyAcquirer {
     }
 
     /**
-     * 批量处理账户
+     * 批量处理账户（无阻塞并发模式）
      * @param {Array} accounts - 账户列表
      * @param {number} proxyType - 代理类型
      * @returns {Promise<Array>} 处理结果
      */
     async processBatch(accounts, proxyType) {
-        console.log(`🚀 开始批量处理 ${accounts.length} 个账户...`);
+        console.log(`🚀 开始无阻塞批量处理 ${accounts.length} 个账户...`);
         
         const results = [];
         const batches = this.chunkArray(accounts, this.batchSize);
@@ -522,58 +657,97 @@ class XiaomiSubsidyAcquirer {
                 accountProxyLists = batch.map(() => []); // 创建空的代理列表
             }
             
-            // 并发处理当前批次
-            const batchPromises = batch.map(async (account, index) => {
-                const proxyList = accountProxyLists[index];
-                
-                // 根据模式处理账户
-                if (this.mode === 'proxy') {
-                    console.log(`🎯 处理账户 ${account.name}（代理模式）`);
-                    const validProxies = proxyList.filter(p => p.server !== 'placeholder');
-                    if (validProxies.length === 0) {
-                        console.log(`⚠️ 账户 ${account.name} 没有可用代理，跳过处理`);
-                        return {
-                            success: false,
-                            account: account,
-                            error: '没有可用的代理IP',
-                            timestamp: new Date().toISOString()
-                        };
-                    }
-                } else {
-                    console.log(`🎯 处理账户 ${account.name}（直连模式）`);
-                }
-                
-                return await this.acquireSubsidyWithRetry(account, proxyList);
-            });
-
-            const batchResults = await Promise.allSettled(batchPromises);
-            
-            // 处理批次结果
-            batchResults.forEach((result, index) => {
-                if (result.status === 'fulfilled') {
-                    results.push(result.value);
-                    const account = batch[index];
-                    if (result.value.success) {
-                        console.log(`✅ 账户 ${account.name} 处理成功`);
-                    } else {
-                        console.log(`❌ 账户 ${account.name} 处理失败: ${result.value.error}`);
-                    }
-                } else {
-                    console.error(`💥 账户 ${batch[index].name} 处理异常:`, result.reason);
-                    results.push({
-                        success: false,
-                        account: batch[index],
-                        error: result.reason?.message || '处理异常',
-                        timestamp: new Date().toISOString()
-                    });
-                }
-            });
+            // 无阻塞并发处理当前批次
+            const batchResults = await this.processBatchNonBlocking(batch, accountProxyLists);
+            results.push(...batchResults);
 
             // 批次间延迟
             if (i < batches.length - 1) {
                 console.log(`⏳ 批次间延迟 2 秒...`);
                 await new Promise(resolve => setTimeout(resolve, 2000));
             }
+        }
+
+        return results;
+    }
+
+    /**
+     * 无阻塞批次处理
+     * @param {Array} batch - 当前批次账户
+     * @param {Array} accountProxyLists - 账户代理列表
+     * @returns {Promise<Array>} 处理结果
+     */
+    async processBatchNonBlocking(batch, accountProxyLists) {
+        const results = [];
+        const runningTasks = new Map();
+        
+        // 启动所有账户的请求任务
+        batch.forEach((account, index) => {
+            const proxyList = accountProxyLists[index];
+            
+            // 根据模式处理账户
+            if (this.mode === 'proxy') {
+                console.log(`🎯 启动账户 ${account.name}（代理模式）`);
+                const validProxies = proxyList.filter(p => p.server !== 'placeholder');
+                if (validProxies.length === 0) {
+                    console.log(`⚠️ 账户 ${account.name} 没有可用代理，跳过处理`);
+                    results.push({
+                        success: false,
+                        account: account,
+                        error: '没有可用的代理IP',
+                        timestamp: new Date().toISOString()
+                    });
+                    return;
+                }
+            } else {
+                console.log(`🎯 启动账户 ${account.name}（直连模式）`);
+            }
+            
+            // 启动异步任务
+            const task = this.acquireSubsidyWithRetry(account, proxyList)
+                .then(result => {
+                    runningTasks.delete(account.phone);
+                    if (result.success) {
+                        console.log(`✅ 账户 ${account.name} 处理成功`);
+                    } else {
+                        console.log(`❌ 账户 ${account.name} 处理失败: ${result.error}`);
+                    }
+                    return result;
+                })
+                .catch(error => {
+                    runningTasks.delete(account.phone);
+                    console.error(`💥 账户 ${account.name} 处理异常:`, error.message);
+                    return {
+                        success: false,
+                        account: account,
+                        error: error.message || '处理异常',
+                        timestamp: new Date().toISOString()
+                    };
+                });
+            
+            runningTasks.set(account.phone, task);
+        });
+
+        // 等待所有任务完成
+        if (runningTasks.size > 0) {
+            console.log(`⏳ 等待 ${runningTasks.size} 个账户任务完成...`);
+            const taskResults = await Promise.allSettled(Array.from(runningTasks.values()));
+            
+            taskResults.forEach((result, index) => {
+                if (result.status === 'fulfilled') {
+                    results.push(result.value);
+                } else {
+                    console.error(`💥 任务异常:`, result.reason);
+                    // 从批次中找到对应的账户
+                    const account = batch[index];
+                    results.push({
+                        success: false,
+                        account: account,
+                        error: result.reason?.message || '任务异常',
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            });
         }
 
         return results;
@@ -1202,7 +1376,7 @@ class SmartXiaomiAcquirer {
     }
 
     /**
-     * 开始循环抢购
+     * 开始循环抢购（无阻塞并发模式）
      */
     async startSubsidyLoop() {
         this.isRunning = true;
@@ -1215,7 +1389,7 @@ class SmartXiaomiAcquirer {
                 console.log(`📊 状态: 成功 ${this.successfulAccounts.size}/${this.accounts.length}, 失败 ${this.failedAccounts.size}`);
                 console.log(`🔁 捡漏模式：将持续抢购直到手动停止或所有账户成功`);
             } else {
-                console.log(`\n🔄 第 ${round}/${this.maxRetryCount} 轮抢购开始 (代理模式)`);
+                console.log(`\n🔄 第 ${round}/${this.maxRetryCount} 轮抢购开始 (代理模式-无阻塞并发)`);
                 console.log(`📊 状态: 成功 ${this.successfulAccounts.size}/${this.accounts.length}, 失败 ${this.failedAccounts.size}`);
             }
             
@@ -1229,53 +1403,8 @@ class SmartXiaomiAcquirer {
                 break;
             }
             
-            // 并发执行抢购
-            const promises = remainingAccounts.map(async (account) => {
-                if (this.successfulAccounts.has(account.phone)) {
-                    return null; // 已成功，跳过
-                }
-                
-                // 根据模式处理
-                const accountIndex = this.accounts.indexOf(account);
-                const proxyList = this.accountProxyLists[accountIndex] || [];
-                
-                if (this.mode === 'proxy') {
-                    // 代理模式：检查是否有可用代理
-                    const validProxies = proxyList.filter(p => p.server !== 'placeholder');
-                    if (validProxies.length === 0) {
-                        console.log(`⚠️ 账户 ${account.name} 没有可用代理，跳过处理`);
-                        return {
-                            success: false,
-                            account: account,
-                            error: '没有可用的代理IP',
-                            timestamp: new Date().toISOString()
-                        };
-                    }
-                    console.log(`🚀 账户 ${account.name}: 开始代理模式并发请求...`);
-                } else {
-                    // 直连模式
-                    console.log(`🚀 账户 ${account.name}: 开始直连模式请求...`);
-                }
-                
-                const acquirer = new XiaomiSubsidyAcquirer(this.mode, this.proxyType);
-                return await acquirer.acquireSubsidyWithRetry(account, proxyList, true); // 跳过重试，由循环处理
-            });
-            
-            const results = await Promise.allSettled(promises);
-            
-            // 处理结果
-            results.forEach((result, index) => {
-                if (result.status === 'fulfilled' && result.value) {
-                    const account = remainingAccounts[index];
-                    if (result.value.success) {
-                        console.log(`✅ 账户 ${account.name} 抢补贴成功！`);
-                        this.successfulAccounts.add(account.phone);
-                    } else {
-                        console.log(`❌ 账户 ${account.name} 抢补贴失败: ${result.value.error}`);
-                        this.failedAccounts.add(account.phone);
-                    }
-                }
-            });
+            // 无阻塞并发执行抢购
+            await this.executeNonBlockingRound(remainingAccounts, round);
             
             // 显示当前轮次结果
             console.log(`📈 第 ${round} 轮结果: 成功 ${this.successfulAccounts.size}/${this.accounts.length}`);
@@ -1308,6 +1437,102 @@ class SmartXiaomiAcquirer {
         
         this.showFinalResults();
         this.isRunning = false;
+    }
+
+    /**
+     * 执行无阻塞轮次抢购
+     * @param {Array} remainingAccounts - 剩余账户列表
+     * @param {number} round - 当前轮次
+     */
+    async executeNonBlockingRound(remainingAccounts, round) {
+        const runningTasks = new Map();
+        const roundResults = [];
+        
+        // 启动所有账户的抢购任务
+        remainingAccounts.forEach((account) => {
+            if (this.successfulAccounts.has(account.phone)) {
+                return; // 已成功，跳过
+            }
+            
+            // 根据模式处理
+            const accountIndex = this.accounts.indexOf(account);
+            const proxyList = this.accountProxyLists[accountIndex] || [];
+            
+            if (this.mode === 'proxy') {
+                // 代理模式：检查是否有可用代理
+                const validProxies = proxyList.filter(p => p.server !== 'placeholder');
+                if (validProxies.length === 0) {
+                    console.log(`⚠️ 账户 ${account.name} 没有可用代理，跳过处理`);
+                    roundResults.push({
+                        success: false,
+                        account: account,
+                        error: '没有可用的代理IP',
+                        timestamp: new Date().toISOString()
+                    });
+                    return;
+                }
+                console.log(`🚀 账户 ${account.name}: 启动代理模式无阻塞并发请求...`);
+            } else {
+                // 直连模式
+                console.log(`🚀 账户 ${account.name}: 启动直连模式请求...`);
+            }
+            
+            // 启动异步任务
+            const task = this.executeAccountTask(account, proxyList, round)
+                .then(result => {
+                    runningTasks.delete(account.phone);
+                    return result;
+                })
+                .catch(error => {
+                    runningTasks.delete(account.phone);
+                    console.error(`💥 账户 ${account.name} 任务异常:`, error.message);
+                    return {
+                        success: false,
+                        account: account,
+                        error: error.message || '任务异常',
+                        timestamp: new Date().toISOString()
+                    };
+                });
+            
+            runningTasks.set(account.phone, task);
+        });
+
+        // 等待所有任务完成
+        if (runningTasks.size > 0) {
+            console.log(`⏳ 第 ${round} 轮等待 ${runningTasks.size} 个账户任务完成...`);
+            const taskResults = await Promise.allSettled(Array.from(runningTasks.values()));
+            
+            taskResults.forEach((result) => {
+                if (result.status === 'fulfilled' && result.value) {
+                    roundResults.push(result.value);
+                } else {
+                    console.error(`💥 轮次任务异常:`, result.reason);
+                }
+            });
+        }
+
+        // 处理轮次结果
+        roundResults.forEach((result) => {
+            if (result.success) {
+                console.log(`✅ 账户 ${result.account.name} 抢补贴成功！`);
+                this.successfulAccounts.add(result.account.phone);
+            } else {
+                console.log(`❌ 账户 ${result.account.name} 抢补贴失败: ${result.error}`);
+                this.failedAccounts.add(result.account.phone);
+            }
+        });
+    }
+
+    /**
+     * 执行单个账户任务
+     * @param {Object} account - 账户信息
+     * @param {Array} proxyList - 代理列表
+     * @param {number} round - 轮次
+     * @returns {Promise<Object>} 任务结果
+     */
+    async executeAccountTask(account, proxyList, round) {
+        const acquirer = new XiaomiSubsidyAcquirer(this.mode, this.proxyType);
+        return await acquirer.acquireSubsidyWithRetry(account, proxyList, true); // 跳过重试，由循环处理
     }
 
     /**
@@ -1721,7 +1946,8 @@ function showHelp() {
 
 📊 模式说明:
   🔗 直连模式: 每个账户单次请求，使用本机IP，适合测试
-  🌐 代理模式: 每个账户使用3个代理IP并发请求，适合正式抢购
+  🌐 代理模式: 每个账户使用3个代理IP无阻塞并发请求，适合正式抢购
+  ⚡ 无阻塞并发: 使用Promise.race实现真正的无阻塞，成功结果立即返回
 
 💡 地区筛选说明:
   系统会根据选择的地区自动筛选出相同regionId的账户进行抢购，避免IP浪费
