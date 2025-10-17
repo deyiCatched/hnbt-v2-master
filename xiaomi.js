@@ -4,7 +4,6 @@
 import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import https from 'https';
-import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import readline from 'readline';
@@ -161,26 +160,6 @@ function parseCookie(cookieString) {
     return result;
 }
 
-/**
- * 生成安全的文件名，移除或替换非法字符
- * @param {string} name - 原始名称
- * @param {string} phone - 手机号
- * @returns {string} 安全的文件名
- */
-function generateSafeFilename(name, phone) {
-    // 移除或替换文件名中的非法字符
-    const safeName = name
-        .replace(/[<>:"/\\|?*]/g, '_')  // 替换Windows不允许的字符
-        .replace(/\s+/g, '_')           // 替换空格为下划线
-        .replace(/_+/g, '_')            // 合并多个下划线
-        .replace(/^_|_$/g, '')          // 移除开头和结尾的下划线
-        .substring(0, 50);              // 限制长度避免文件名过长
-    
-    // 确保手机号也是安全的
-    const safePhone = phone.replace(/[^0-9]/g, '');
-    
-    return `${safeName}_${safePhone}.txt`;
-}
 
 /**
  * 小米商城补贴获取器
@@ -627,9 +606,6 @@ class XiaomiSubsidyAcquirer {
                 }
             }
 
-            // 单次请求完成后立即写入日志
-            this.saveSingleRequestLog(result);
-
             return result;
 
         } catch (error) {
@@ -645,9 +621,6 @@ class XiaomiSubsidyAcquirer {
                 isNetworkError: isNetworkError(error),
                 connectionPoolUsed: this.mode === 'direct' && this.enableConnectionPool
             };
-
-            // 单次请求完成后立即写入日志
-            this.saveSingleRequestLog(result);
 
             return result;
         }
@@ -905,285 +878,10 @@ class XiaomiSubsidyAcquirer {
         return chunks;
     }
 
-    /**
-     * 保存结果到文件
-     * @param {Array} results - 结果数组
-     * @param {string} filename - 文件名
-     */
-    saveResults(results, filename) {
-        try {
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const logDir = 'simple-logs';
-            const filepath = `${logDir}/xiaomi-results-${timestamp}.json`;
-            
-            // 确保目录存在
-            if (!fs.existsSync(logDir)) {
-                fs.mkdirSync(logDir, { recursive: true });
-                console.log(`📁 创建日志目录: ${logDir}`);
-            }
-            
-            const data = {
-                timestamp: new Date().toISOString(),
-                total: results.length,
-                success: results.filter(r => r.success).length,
-                failed: results.filter(r => !r.success).length,
-                results: results
-            };
 
-            fs.writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf8');
-            console.log(`📁 结果已保存到: ${filepath}`);
-            
-            // 注意：单次请求日志已在每次请求完成后立即保存，无需批量保存
-            
-            return filepath;
-        } catch (error) {
-            console.error('💥 保存结果失败:', error.message);
-            return null;
-        }
-    }
 
-    /**
-     * 为每个账户保存独立的日志文件
-     * @param {Array} results - 结果数组
-     * @param {string} logDir - 日志目录
-     */
-    saveIndividualLogs(results, logDir) {
-        try {
-            console.log('📝 开始为每个账户创建独立日志文件...');
-            
-            results.forEach((result, index) => {
-                if (result.account) {
-                    const account = result.account;
-                    const filename = generateSafeFilename(account.name, account.phone);
-                    const filepath = `${logDir}/${filename}`;
-                    
-                    // 创建日志内容
-                    const logContent = this.createIndividualLogContent(result, index + 1);
-                    
-                    // 写入文件（追加模式）
-                    fs.appendFileSync(filepath, logContent, 'utf8');
-                    console.log(`📄 账户日志已保存: ${filename}`);
-                }
-            });
-            
-            console.log(`✅ 成功为 ${results.length} 个账户创建独立日志文件`);
-        } catch (error) {
-            console.error('💥 创建独立日志文件失败:', error.message);
-        }
-    }
 
-    /**
-     * 创建单个账户的日志内容
-     * @param {Object} result - 单个结果
-     * @param {number} index - 结果索引
-     * @returns {string} 日志内容
-     */
-    createIndividualLogContent(result, index) {
-        const timestamp = new Date().format('YYYY-MM-DD HH:mm:ss');
-        const account = result.account;
-        
-        let logContent = '';
-        logContent += `========================================\n`;
-        logContent += `小米商城补贴获取日志 - ${account.name} (${account.phone})\n`;
-        logContent += `========================================\n`;
-        logContent += `时间: ${timestamp}\n`;
-        logContent += `账户: ${account.name}\n`;
-        logContent += `手机: ${account.phone}\n`;
-        logContent += `用户ID: ${account.userId || 'N/A'}\n`;
-        logContent += `结果序号: ${index}\n`;
-        logContent += `\n`;
-        
-        // 请求信息
-        logContent += `📡 请求信息:\n`;
-        if (result.proxy) {
-            logContent += `   代理IP: ${result.proxy.server}:${result.proxy.port}\n`;
-            logContent += `   验证IP: ${result.proxy.validatedIP || 'N/A'}\n`;
-            logContent += `   代理来源: ${result.proxy.source || 'N/A'}\n`;
-        }
-        if (result.duration) {
-            logContent += `   请求耗时: ${result.duration}ms\n`;
-        }
-        if (result.requestIndex) {
-            logContent += `   请求序号: ${result.requestIndex}\n`;
-        }
-        logContent += `\n`;
-        
-        // 结果信息
-        logContent += `📊 执行结果:\n`;
-        logContent += `   状态: ${result.success ? '✅ 成功' : '❌ 失败'}\n`;
-        if (result.success && result.message) {
-            logContent += `   成功信息: ${result.message}\n`;
-        }
-        if (result.success && result.tips) {
-            logContent += `   提示信息: ${result.tips}\n`;
-        }
-        if (result.error) {
-            logContent += `   错误信息: ${result.error}\n`;
-        }
-        logContent += `\n`;
-        
-        // 响应信息
-        if (result.response) {
-            logContent += `📨 响应信息:\n`;
-            logContent += `   响应码: ${result.response.code || 'N/A'}\n`;
-            logContent += `   响应消息: ${result.response.message || 'N/A'}\n`;
-            if (result.response.data) {
-                logContent += `   业务数据:\n`;
-                if (result.response.data.tips) {
-                    logContent += `     提示信息: ${result.response.data.tips}\n`;
-                }
-                if (result.response.data.cateCode) {
-                    logContent += `     分类代码: ${result.response.data.cateCode}\n`;
-                }
-            }
-            logContent += `\n`;
-        }
-        
-        // 完整响应（用于调试）
-        if (result.response) {
-            logContent += `🔍 完整响应数据:\n`;
-            logContent += `${JSON.stringify(result.response, null, 2)}\n`;
-            logContent += `\n`;
-        }
-        
-        logContent += `========================================\n\n`;
-        
-        return logContent;
-    }
 
-    /**
-     * 保存单次请求日志
-     * @param {Object} result - 单次请求结果
-     */
-    saveSingleRequestLog(result) {
-        try {
-            const logDir = 'simple-logs';
-            
-            // 确保目录存在
-            if (!fs.existsSync(logDir)) {
-                fs.mkdirSync(logDir, { recursive: true });
-                console.log(`📁 创建日志目录: ${logDir}`);
-            }
-            
-            if (result.account) {
-                const account = result.account;
-                const filename = generateSafeFilename(account.name, account.phone);
-                const filepath = `${logDir}/${filename}`;
-                
-                // 创建单次请求日志内容
-                const logContent = this.createSingleRequestLogContent(result);
-                
-                // 验证日志内容不为空
-                if (!logContent || logContent.trim().length === 0) {
-                    console.warn(`⚠️ 日志内容为空，跳过保存: ${filename}`);
-                    return;
-                }
-                
-                // 写入文件（追加模式）
-                fs.appendFileSync(filepath, logContent, 'utf8');
-                console.log(`📝 单次请求日志已保存: ${filename} (请求${result.requestIndex || 'N/A'})`);
-            } else {
-                console.warn(`⚠️ 结果中缺少账户信息，跳过日志保存`);
-            }
-        } catch (error) {
-            console.error('💥 保存单次请求日志失败:', error.message);
-            console.error('💥 错误详情:', error);
-            
-            // 尝试保存到备用位置
-            try {
-                const backupDir = 'logs-backup';
-                if (!fs.existsSync(backupDir)) {
-                    fs.mkdirSync(backupDir, { recursive: true });
-                }
-                
-                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                const backupFile = `${backupDir}/error-${timestamp}.txt`;
-                const errorContent = `日志保存错误: ${error.message}\n时间: ${new Date().toISOString()}\n结果: ${JSON.stringify(result, null, 2)}\n`;
-                
-                fs.writeFileSync(backupFile, errorContent, 'utf8');
-                console.log(`📁 错误日志已保存到备用位置: ${backupFile}`);
-            } catch (backupError) {
-                console.error('💥 备用日志保存也失败:', backupError.message);
-            }
-        }
-    }
-
-    /**
-     * 创建单次请求日志内容
-     * @param {Object} result - 单次请求结果
-     * @returns {string} 日志内容
-     */
-    createSingleRequestLogContent(result) {
-        const timestamp = new Date().toISOString();
-        const account = result.account;
-        
-        let logContent = '';
-        logContent += `========================================\n`;
-        logContent += `小米商城单次请求日志 - ${account.name} (${account.phone})\n`;
-        logContent += `========================================\n`;
-        logContent += `时间: ${timestamp}\n`;
-        logContent += `账户: ${account.name}\n`;
-        logContent += `手机: ${account.phone}\n`;
-        logContent += `用户ID: ${account.userId || 'N/A'}\n`;
-        logContent += `请求序号: ${result.requestIndex || 'N/A'}\n`;
-        logContent += `\n`;
-        
-        // 请求信息
-        logContent += `📡 请求信息:\n`;
-        if (result.proxy && result.proxy.server && result.proxy.server !== 'placeholder') {
-            logContent += `   连接模式: 代理模式\n`;
-            logContent += `   代理: ${result.proxy.server}:${result.proxy.port}\n`;
-            logContent += `   代理IP: ${result.proxy.validatedIP}\n`;
-        } else {
-            logContent += `   连接模式: 直连（本机IP）\n`;
-        }
-        if (result.duration) {
-            logContent += `   请求耗时: ${result.duration}ms\n`;
-        }
-        logContent += `\n`;
-        
-        // 结果信息
-        logContent += `📊 执行结果:\n`;
-        logContent += `   状态: ${result.success ? '✅ 成功' : '❌ 失败'}\n`;
-        if (result.success && result.message) {
-            logContent += `   成功信息: ${result.message}\n`;
-        }
-        if (result.success && result.tips) {
-            logContent += `   提示信息: ${result.tips}\n`;
-        }
-        if (result.error) {
-            logContent += `   错误信息: ${result.error}\n`;
-        }
-        logContent += `\n`;
-        
-        // 响应信息
-        if (result.response) {
-            logContent += `📨 响应信息:\n`;
-            logContent += `   响应码: ${result.response.code || 'N/A'}\n`;
-            logContent += `   响应消息: ${result.response.message || 'N/A'}\n`;
-            if (result.response.data) {
-                logContent += `   业务数据:\n`;
-                if (result.response.data.tips) {
-                    logContent += `     提示信息: ${result.response.data.tips}\n`;
-                }
-                if (result.response.data.cateCode) {
-                    logContent += `     分类代码: ${result.response.data.cateCode}\n`;
-                }
-            }
-            logContent += `\n`;
-        }
-        
-        // 完整响应（用于调试）
-        if (result.response) {
-            logContent += `🔍 完整响应数据:\n`;
-            logContent += `${JSON.stringify(result.response, null, 2)}\n`;
-            logContent += `\n`;
-        }
-        
-        logContent += `========================================\n\n`;
-        
-        return logContent;
-    }
 
     /**
      * 发送抢券成功推送通知
@@ -1285,9 +983,6 @@ export async function executeXiaomiBatch(accounts, proxyType = 1, region = 'cq')
         const acquirer = new XiaomiSubsidyAcquirer('direct', proxyType, this.options);
         const results = await acquirer.processBatch(filteredAccounts, proxyType);
 
-        // 保存结果
-        const filepath = acquirer.saveResults(results);
-        
         // 打印统计信息
         acquirer.printStatistics(results);
 
@@ -1645,105 +1340,10 @@ class SmartXiaomiAcquirer {
             });
         }
         
-        // 保存每个账户的独立日志
-        this.saveSmartAcquisitionLogs();
+        // 智能抢购完成，仅通过推送通知判断成功
     }
 
-    /**
-     * 保存智能抢购的每个账户日志
-     */
-    saveSmartAcquisitionLogs() {
-        try {
-            console.log('\n📝 开始保存智能抢购日志...');
-            const logDir = 'simple-logs';
-            
-            // 确保目录存在
-            if (!fs.existsSync(logDir)) {
-                fs.mkdirSync(logDir, { recursive: true });
-                console.log(`📁 创建日志目录: ${logDir}`);
-            }
-            
-            this.accounts.forEach((account, index) => {
-                const filename = generateSafeFilename(account.name, account.phone);
-                const filepath = `${logDir}/${filename}`;
-                
-                // 创建智能抢购日志内容
-                const logContent = this.createSmartAcquisitionLogContent(account, index + 1);
-                
-                // 写入文件（追加模式）
-                fs.appendFileSync(filepath, logContent, 'utf8');
-                console.log(`📄 智能抢购日志已保存: ${filename}`);
-            });
-            
-            console.log(`✅ 成功为 ${this.accounts.length} 个账户保存智能抢购日志`);
-        } catch (error) {
-            console.error('💥 保存智能抢购日志失败:', error.message);
-        }
-    }
 
-    /**
-     * 创建智能抢购的单个账户日志内容
-     * @param {Object} account - 账户信息
-     * @param {number} index - 账户索引
-     * @returns {string} 日志内容
-     */
-    createSmartAcquisitionLogContent(account, index) {
-        const timestamp = new Date().toISOString();
-        const isSuccess = this.successfulAccounts.has(account.phone);
-        
-        let logContent = '';
-        logContent += `========================================\n`;
-        logContent += `小米商城智能抢购日志 - ${account.name} (${account.phone})\n`;
-        logContent += `========================================\n`;
-        logContent += `时间: ${timestamp}\n`;
-        logContent += `账户: ${account.name}\n`;
-        logContent += `手机: ${account.phone}\n`;
-        logContent += `用户ID: ${account.userId || 'N/A'}\n`;
-        logContent += `账户序号: ${index}\n`;
-        logContent += `\n`;
-        
-        // 抢购设置
-        logContent += `⚙️ 抢购设置:\n`;
-        logContent += `   开始时间: ${this.startTime}\n`;
-        logContent += `   代理类型: ${this.proxyType}\n`;
-        logContent += `   最大重试: ${this.maxRetryCount} 轮\n`;
-        logContent += `   重试间隔: ${this.retryInterval}ms\n`;
-        logContent += `\n`;
-        
-        // 连接信息
-        logContent += `📡 连接信息:\n`;
-        if (result.proxy && result.proxy.server && result.proxy.server !== 'placeholder') {
-            logContent += `   模式: 代理模式\n`;
-            logContent += `   代理: ${result.proxy.server}:${result.proxy.port}\n`;
-            logContent += `   代理IP: ${result.proxy.validatedIP}\n`;
-        } else {
-            logContent += `   模式: 直连模式（使用本机IP）\n`;
-            logContent += `   代理: 无\n`;
-        }
-        logContent += `\n`;
-        
-        // 最终结果
-        logContent += `📊 最终结果:\n`;
-        logContent += `   状态: ${isSuccess ? '✅ 成功' : '❌ 失败'}\n`;
-        if (isSuccess) {
-            logContent += `   结果: 成功抢到补贴\n`;
-        } else {
-            logContent += `   结果: 未成功抢到补贴\n`;
-        }
-        logContent += `\n`;
-        
-        // 统计信息
-        logContent += `📈 整体统计:\n`;
-        logContent += `   总账户数: ${this.accounts.length}\n`;
-        logContent += `   成功账户: ${this.successfulAccounts.size}\n`;
-        logContent += `   失败账户: ${this.failedAccounts.size}\n`;
-        logContent += `   成功率: ${((this.successfulAccounts.size / this.accounts.length) * 100).toFixed(2)}%\n`;
-        logContent += `\n`;
-        
-        logContent += `========================================\n\n`;
-        
-        return logContent;
-    }
 
     /**
      * 停止抢购
