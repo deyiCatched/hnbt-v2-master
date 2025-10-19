@@ -20,9 +20,23 @@ import { notificationService } from './notification.js';
  */
 const REGION_MAP = {
     'cq': { name: '重庆', regionId: '10' },
-    'yn': { name: '云南', regionId: '14' },
+    'yn': { name: '云南', regionId: '21' },
     'fj': { name: '福建', regionId: '23' }
 };
+
+/**
+ * 根据regionId获取地区名称
+ * @param {string} regionId - 地区ID
+ * @returns {string} 地区名称
+ */
+function getRegionNameByRegionId(regionId) {
+    for (const [key, value] of Object.entries(REGION_MAP)) {
+        if (value.regionId === regionId.toString()) {
+            return value.name;
+        }
+    }
+    return `未知地区(${regionId})`;
+}
 
 /**
  * 在线用户信息获取配置
@@ -31,6 +45,18 @@ const ONLINE_API_CONFIG = {
     baseURL: 'http://8.148.75.17:3000',
     endpoint: '/api/purchase/records',
     defaultLimit: 20
+};
+
+/**
+ * 全局配置
+ */
+const config = {
+    // 服务器状态更新配置
+    statusUpdate: {
+        enabled: true,  // 是否启用状态更新
+        baseUrl: 'http://8.148.75.17:3000',
+        purchaser: '唐德意'  // 抢购人，可配置修改
+    }
 };
 
 /**
@@ -48,7 +74,7 @@ async function fetchOnlineUserAccounts(page = 1, limit = 20) {
             page: page,
             limit: limit,
             is_success:"false",
-            name:'tdy'
+            // name:'tdy'
         };
         
         const response = await axios.get(url, { 
@@ -71,6 +97,7 @@ async function fetchOnlineUserAccounts(page = 1, limit = 20) {
                     accId: `online_acc_${record.id}`,
                     grabToken: `online_token_${record.id}`,
                     uniqueId: record.id.toString(),
+                    accountId: record.id, // 保留原始accountId用于状态更新
                     serviceToken: cookieData.serviceToken || '',
                     userId: cookieData.userId || '',
                     dId: 'OXBJOW5jM2cyZDd2bUh2TTJncDFHS0pCTFl3SUx1QUhEcXFMRytRN2x6aURaK3NSVXV2aHZmUGR6UWtoWDhIUg==', // 默认值
@@ -78,7 +105,7 @@ async function fetchOnlineUserAccounts(page = 1, limit = 20) {
                     sentryTrace: '1e52fc5869554d0b8f935be162226a76-dda486e670d9448d-1', // 默认值
                     baggage: 'sentry-environment=RELEASE,sentry-public_key=ee0a98b8e8e3417c89db4f9fd258ef62,sentry-release=com.xiaomi.mishop%405.2.257%2B2509112112,sentry-sample_rate=1,sentry-trace_id=1e52fc5869554d0b8f935be162226a76,sentry-transaction=MSNewMainViewController', // 默认值
                     cateCode: record.product_type || 'B01', // 使用API中的product_type
-                    regionId: '10', // 默认重庆地区
+                    regionId: record.region_id ? record.region_id.toString() : '10', // 使用API中的region_id，默认重庆地区
                     activityCategory: '100', // 默认值
                     paymentMode: 'UNIONPAY', // 默认值
                     // 保留原始记录信息用于调试
@@ -98,7 +125,8 @@ async function fetchOnlineUserAccounts(page = 1, limit = 20) {
             // 显示获取到的账户信息摘要
             console.log(`📋 账户信息摘要:`);
             accounts.forEach((account, index) => {
-                console.log(`   ${index + 1}. ${account.name} (${account.phone}) - ${account.cateCode}`);
+                const regionName = getRegionNameByRegionId(account.regionId);
+                console.log(`   ${index + 1}. ${account.name} (${account.phone}) - ${account.cateCode} [地区: ${regionName}]`);
             });
             
             return accounts;
@@ -160,6 +188,74 @@ function parseCookie(cookieString) {
     return result;
 }
 
+/**
+ * 服务器状态更新服务
+ */
+class StatusUpdateService {
+    constructor(options = {}) {
+        this.config = { ...config.statusUpdate, ...options };
+    }
+
+    /**
+     * 更新账户抢购状态
+     * @param {string|number} accountId - 账户ID
+     * @param {string} purchaser - 抢购人（可选，默认使用配置中的值）
+     * @returns {Promise<Object>} 更新结果
+     */
+    async updatePurchaseStatus(accountId, purchaser = null) {
+        if (!this.config.enabled) {
+            console.log('🔄 状态更新已禁用，跳过更新');
+            return { success: true, message: '状态更新已禁用' };
+        }
+
+        try {
+            const url = `${this.config.baseUrl}/api/purchase/records/${accountId}/purchase-status`;
+            const purchaserName = purchaser || this.config.purchaser;
+            
+            console.log(`🔄 正在更新账户${accountId}的抢购状态...`);
+            
+            // 按照API文档格式构建请求体
+            const requestBody = {
+                purchaser: purchaserName
+                // 不传purchase_time，让服务器使用当前时间
+            };
+            
+            const response = await axios.put(url, requestBody, {
+                timeout: 10000,
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (response.status === 200) {
+                console.log(`✅ 账户${accountId}状态更新成功`);
+                return {
+                    success: true,
+                    message: '状态更新成功',
+                    data: response.data,
+                    accountId: accountId,
+                    purchaser: purchaserName
+                };
+            } else {
+                console.log(`❌ 账户${accountId}状态更新失败: HTTP ${response.status}`);
+                return {
+                    success: false,
+                    message: `状态更新失败: HTTP ${response.status}`,
+                    accountId: accountId,
+                    status: response.status
+                };
+            }
+        } catch (error) {
+            console.error(`❌ 账户${accountId}状态更新异常:`, error.message);
+            return {
+                success: false,
+                message: error.message,
+                error: error,
+                accountId: accountId
+            };
+        }
+    }
+}
 
 /**
  * 小米商城补贴获取器
@@ -169,7 +265,7 @@ class XiaomiSubsidyAcquirer {
         this.baseURL = 'https://shop-api.retail.mi.com';
         this.endpoint = '/mtop/navi/saury/subsidy/fetch';
         this.maxRetries = 3;
-        this.retryDelay = 1000; // 1秒
+        this.retryDelay = 100; // 所有模式统一使用100ms重试间隔
         this.batchSize = 10; // 批量处理大小
         this.results = [];
         
@@ -177,69 +273,32 @@ class XiaomiSubsidyAcquirer {
         this.mode = mode; // 'direct' 或 'proxy'
         this.proxyType = proxyType; // 代理类型
         
-        // 直连模式优化配置
-        this.directConcurrency = options.directConcurrency || 1; // 直连模式固定为单次请求
-        this.enableConnectionPool = options.enableConnectionPool !== false; // 默认启用连接池
-        this.connectionPoolSize = options.connectionPoolSize || 20; // 连接池大小
+        // 直连模式配置 - 取消连接池，每个账户独立执行
+        this.directConcurrency = 1; // 直连模式固定为单次请求
+        this.enableConnectionPool = false; // 禁用连接池
+        this.accountInterval = 100; // 每个账户抢购间隔100ms
         
-        // 初始化连接池
-        this.initializeConnectionPools();
+        // 初始化状态更新服务
+        this.statusUpdateService = new StatusUpdateService();
         
-        console.log(`🔧 初始化补贴获取器 - 模式: ${mode === 'direct' ? '直连模式' : '代理模式'}`);
-        if (mode === 'proxy') {
-            console.log(`🌐 代理类型: ${proxyType}`);
-        } else {
-            console.log(`🔗 直连模式配置: 单次请求, 连接池=${this.enableConnectionPool ? '启用' : '禁用'}`);
-        }
+        // 模式配置日志已移除，重点关注业务结果
     }
 
     /**
-     * 初始化HTTP连接池
+     * 初始化HTTP连接池 - 已禁用连接池模式
      */
     initializeConnectionPools() {
-        if (!this.enableConnectionPool) {
-            console.log(`⚠️ 连接池已禁用，将使用传统连接方式`);
-            return;
-        }
-
-        // 创建直连模式的连接池Agent
-        this.directConnectionAgent = new https.Agent({
-            keepAlive: true,              // 保持连接活跃
-            keepAliveMsecs: 60000,        // 心跳包间隔60秒
-            maxSockets: this.connectionPoolSize,  // 最大并发连接数
-            maxFreeSockets: Math.floor(this.connectionPoolSize / 2), // 最大空闲连接数
-            timeout: 30000,               // 连接超时30秒
-            scheduling: 'fifo'            // 先进先出调度
-        });
-
-        // 为直连模式创建共享的axios实例
-        this.directAxiosInstance = axios.create({
-            httpsAgent: this.directConnectionAgent,
-            timeout: 30000,
-            baseURL: this.baseURL
-        });
-
-        console.log(`✅ 直连模式连接池已初始化: 最大连接数=${this.connectionPoolSize}, 空闲连接数=${Math.floor(this.connectionPoolSize / 2)}`);
+        // 连接池模式已禁用，所有请求使用独立连接
     }
 
     /**
-     * 获取连接池状态信息
+     * 获取连接池状态信息 - 连接池已禁用
      * @returns {Object} 连接池状态
      */
     getConnectionPoolStatus() {
-        if (!this.enableConnectionPool || !this.directConnectionAgent) {
-            return { enabled: false, message: '连接池未启用' };
-        }
-
-        const agent = this.directConnectionAgent;
-        return {
-            enabled: true,
-            maxSockets: agent.maxSockets,
-            maxFreeSockets: agent.maxFreeSockets,
-            keepAlive: agent.keepAlive,
-            keepAliveMsecs: agent.keepAliveMsecs,
-            // 注意: 实际运行时的连接数需要从agent内部获取，这里提供配置信息
-            message: `连接池已启用 - 最大连接:${agent.maxSockets}, 最大空闲:${agent.maxFreeSockets}`
+        return { 
+            enabled: false, 
+            message: '连接池模式已禁用，每个账户使用独立连接' 
         };
     }
 
@@ -262,7 +321,6 @@ class XiaomiSubsidyAcquirer {
         const cateCode = accountInfo.cateCode;
         const regionId = accountInfo.regionId;
         const activityCategory = accountInfo.activityCategory;
-        const paymentMode = accountInfo.paymentMode;
         
         const config = {
             method: 'POST',
@@ -288,8 +346,7 @@ class XiaomiSubsidyAcquirer {
                 {
                     "cateCode": cateCode || "B01",
                     "regionId": regionId || "10",
-                    "activityCategory": activityCategory || "100",
-                    "paymentMode": paymentMode || "UNIONPAY"
+                    "activityCategory": activityCategory || "100"
                 }
             ],
             timeout: 30000 // 30秒超时
@@ -301,15 +358,6 @@ class XiaomiSubsidyAcquirer {
             const proxyUrl = `http://${proxyInfo.server}:${proxyInfo.port}`;
             config.httpsAgent = new HttpsProxyAgent(proxyUrl);
             config.httpAgent = new HttpsProxyAgent(proxyUrl);
-            console.log(`🌐 使用代理: ${proxyInfo.server}:${proxyInfo.port}`);
-        } else {
-            // 直连模式：使用连接池（如果启用）
-            if (this.enableConnectionPool && this.directConnectionAgent) {
-                config.httpsAgent = this.directConnectionAgent;
-                console.log(`🔗 使用直连模式（连接池复用）`);
-            } else {
-                console.log(`🔗 使用直连模式（传统连接）`);
-            }
         }
 
         return config;
@@ -327,9 +375,6 @@ class XiaomiSubsidyAcquirer {
         try {
             if (this.mode === 'proxy') {
                 // 代理模式：使用3个代理IP并发请求（无阻塞模式）
-                console.log(`🎯 开始为账户 ${accountInfo.name}(${accountInfo.phone}) 代理模式无阻塞并发获取补贴...`);
-                console.log(`📡 使用3个代理IP进行无阻塞并发请求`);
-
                 if (!proxyList || proxyList.length === 0) {
                     throw new Error('代理模式下需要提供代理IP列表');
                 }
@@ -338,22 +383,13 @@ class XiaomiSubsidyAcquirer {
                 return await this.executeNonBlockingProxyRequests(accountInfo, proxyList, startTime);
 
             } else {
-                // 直连模式：单次请求，使用连接池
-                console.log(`🎯 开始为账户 ${accountInfo.name}(${accountInfo.phone}) 直连模式获取补贴...`);
-                console.log(`📡 使用本机IP单次请求（连接池复用）`);
-
+                // 直连模式：单次请求，每个账户独立执行
                 // 直接执行单次请求
-                const result = await this.executeSingleRequest(accountInfo, null, 1);
-                
-                const duration = Date.now() - startTime;
-                console.log(`✅ 直连模式请求完成，总耗时: ${duration}ms`);
-
-                return result;
+                return await this.executeSingleRequest(accountInfo, null, 1);
             }
 
         } catch (error) {
             const duration = Date.now() - startTime;
-            console.error(`💥 账户 ${accountInfo.name} 请求失败:`, error.message);
 
             const result = {
                 success: false,
@@ -384,8 +420,6 @@ class XiaomiSubsidyAcquirer {
         let completedCount = 0;
         let errorMessages = [];
         
-        console.log(`🚀 启动 ${maxConcurrent} 个代理无阻塞并发请求...`);
-        
         // 创建所有并发请求
         for (let i = 0; i < maxConcurrent; i++) {
             const proxy = proxyList[i];
@@ -394,11 +428,6 @@ class XiaomiSubsidyAcquirer {
                     completedCount++;
                     if (result.success && !firstSuccess) {
                         firstSuccess = result;
-                        console.log(`🎉 账户 ${accountInfo.name}: 第${i + 1}个代理请求成功！`);
-                        // 确保推送通知在成功时立即发送
-                        if (result.message === '抢券成功') {
-                            console.log(`📱 抢券成功推送通知已发送: ${accountInfo.name}`);
-                        }
                     } else if (!result.success) {
                         errorMessages.push(`代理${i + 1}: ${result.error || '请求失败'}`);
                     }
@@ -406,7 +435,6 @@ class XiaomiSubsidyAcquirer {
                 })
                 .catch(error => {
                     completedCount++;
-                    console.log(`❌ 账户 ${accountInfo.name}: 第${i + 1}个代理请求异常: ${error.message}`);
                     errorMessages.push(`代理${i + 1}: ${error.message}`);
                     return {
                         success: false,
@@ -558,15 +586,9 @@ class XiaomiSubsidyAcquirer {
         try {
             const config = this.createRequestConfig(accountInfo, proxyInfo);
             
-            // 根据模式选择axios实例
+            // 所有请求都使用独立连接（连接池已禁用）
             let response;
-            if (this.mode === 'direct' && this.enableConnectionPool && this.directAxiosInstance) {
-                // 直连模式使用连接池实例
-                response = await this.directAxiosInstance(config);
-            } else {
-                // 代理模式或禁用连接池时使用传统方式
-                response = await axios(config);
-            }
+            response = await axios(config);
 
             const duration = Date.now() - startTime;
 
@@ -579,37 +601,40 @@ class XiaomiSubsidyAcquirer {
                 requestIndex: requestIndex,
                 duration: duration,
                 timestamp: new Date().toISOString(),
-                connectionPoolUsed: this.mode === 'direct' && this.enableConnectionPool
+                connectionPoolUsed: false
             };
 
-            // 检查业务逻辑结果 - 基于tips判断抢券成功
-            if (response.data && response.data.code !== undefined) {
-                const tips = response.data.data && response.data.data.tips;
+            // 使用改进的抢券成功判断逻辑
+            const isSuccessful = this.isRushSuccessful(response.data);
+            const currentTime = new Date().toLocaleTimeString();
+            
+            if (isSuccessful) {
+                result.success = true;
+                result.message = '抢券成功';
+                result.tips = '';
                 
-                // 判断条件：tips为空字符串表示抢券成功
-                if (tips === '') {
-                    result.success = true;
-                    result.message = '抢券成功';
-                    result.tips = '';
-                    
-                    // 发送抢券成功推送通知 - 确认成功，包含完整响应体
-                    this.sendSuccessNotification(accountInfo, 'confirmed', response.data);
-                    
-                } else {
-                    // tips不为空字符串，表示失败
-                    result.success = false;
-                    if (tips) {
-                        result.error = tips;
-                    } else {
-                        result.error = response.data.message || '抢券失败';
-                    }
-                }
+                // 使用简洁的日志格式，参考RushPurchase的格式
+                console.log(`${currentTime} 🎉 ${accountInfo.name}(${accountInfo.phone}) 抢券成功！`);
+                
+                // 处理抢购成功后的操作
+                await this.handleSuccess(accountInfo, response.data);
+                
+            } else {
+                result.success = false;
+                const tips = response.data && response.data.data && response.data.data.tips;
+                const tipsMessage = tips || (response.data.data && response.data.data.message) || response.data.message || '抢券失败';
+                result.error = tipsMessage;
+                
+                // 使用简洁的日志格式
+                console.log(`${currentTime} ⚠️  ${accountInfo.name}: ${tipsMessage}`);
             }
 
             return result;
 
         } catch (error) {
             const duration = Date.now() - startTime;
+            const currentTime = new Date().toLocaleTimeString();
+            
             const result = {
                 success: false,
                 account: accountInfo,
@@ -619,13 +644,50 @@ class XiaomiSubsidyAcquirer {
                 duration: duration,
                 timestamp: new Date().toISOString(),
                 isNetworkError: isNetworkError(error),
-                connectionPoolUsed: this.mode === 'direct' && this.enableConnectionPool
+                connectionPoolUsed: false
             };
+
+            // 使用简洁的日志格式输出错误
+            console.log(`${currentTime} ❌ ${accountInfo.name}: 请求失败 - ${error.message}`);
 
             return result;
         }
     }
 
+    /**
+     * 判断是否抢购成功
+     * @param {Object} responseData - API响应数据
+     * @returns {boolean} 是否成功
+     */
+    isRushSuccessful(responseData) {
+        if (!responseData) return false;
+        
+        // 根据小米API的实际响应格式：只有当code=0 && tips为空字符串才表示成功
+        const isCodeSuccess = responseData.code === 0 || responseData.code === '0';
+        const isTipsEmpty = responseData.data && 
+                           (responseData.data.tips === '' || 
+                            responseData.data.tips === null || 
+                            responseData.data.tips === undefined);
+        
+        return isCodeSuccess && isTipsEmpty;
+    }
+
+    /**
+     * 处理抢购成功后的操作
+     * @param {Object} accountInfo - 账户信息
+     * @param {Object} responseData - API响应数据
+     */
+    async handleSuccess(accountInfo, responseData) {
+        // 发送抢券成功推送通知 - 确认成功，包含完整响应体
+        await this.sendSuccessNotification(accountInfo, 'confirmed', responseData);
+        
+        // 更新服务器状态 - 如果有accountId则推送状态更新
+        if (accountInfo.accountId) {
+            this.statusUpdateService.updatePurchaseStatus(accountInfo.accountId).catch(error => {
+                console.error(`❌ 状态更新失败:`, error.message);
+            });
+        }
+    }
 
     /**
      * 带重试机制的补贴获取（直连模式）
@@ -643,8 +705,6 @@ class XiaomiSubsidyAcquirer {
         let lastResult = null;
 
         for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
-            console.log(`🔄 第 ${attempt}/${this.maxRetries} 次尝试获取补贴...`);
-
             const result = await this.acquireSubsidy(accountInfo, proxyList);
             lastResult = result;
 
@@ -655,10 +715,7 @@ class XiaomiSubsidyAcquirer {
 
             // 如果是网络错误且还有重试机会，等待后重试
             if (result.isNetworkError && attempt < this.maxRetries) {
-                console.log(`🔄 检测到网络错误，等待后重试...`);
-                
                 // 等待一段时间后重试
-                console.log(`⏳ 等待 ${this.retryDelay}ms 后重试...`);
                 await new Promise(resolve => setTimeout(resolve, this.retryDelay));
             } else {
                 // 非网络错误或已达到最大重试次数，直接返回
@@ -676,21 +733,20 @@ class XiaomiSubsidyAcquirer {
      * @returns {Promise<Array>} 处理结果
      */
     async processBatch(accounts, proxyType) {
-        console.log(`🚀 开始无阻塞批量处理 ${accounts.length} 个账户...`);
+        // 批量处理开始，重点关注tips字段输出
         
         const results = [];
         const batches = this.chunkArray(accounts, this.batchSize);
 
         for (let i = 0; i < batches.length; i++) {
             const batch = batches[i];
-            console.log(`\n📦 处理第 ${i + 1}/${batches.length} 批次 (${batch.length} 个账户)`);
+            // 批次处理日志已移除，重点关注tips字段
 
             // 根据模式准备代理IP或创建空列表
             let accountProxyLists = [];
             
             if (this.mode === 'proxy') {
                 // 代理模式：为每个账户准备3个代理IP
-                console.log(`🔧 代理模式：为 ${batch.length} 个账户准备代理IP...`);
                 accountProxyLists = await concurrentProxyManager.prepareProxiesForAccounts(
                     batch, 
                     this.proxyType, 
@@ -698,7 +754,6 @@ class XiaomiSubsidyAcquirer {
                 );
             } else {
                 // 直连模式：创建空的代理列表
-                console.log(`🔧 直连模式：为 ${batch.length} 个账户准备请求...`);
                 accountProxyLists = batch.map(() => []); // 创建空的代理列表
             }
             
@@ -706,9 +761,8 @@ class XiaomiSubsidyAcquirer {
             const batchResults = await this.processBatchNonBlocking(batch, accountProxyLists);
             results.push(...batchResults);
 
-            // 批次间延迟
-            if (i < batches.length - 1) {
-                console.log(`⏳ 批次间延迟 2 秒...`);
+            // 批次间延迟（仅代理模式）
+            if (i < batches.length - 1 && this.mode === 'proxy') {
                 await new Promise(resolve => setTimeout(resolve, 2000));
             }
         }
@@ -724,18 +778,61 @@ class XiaomiSubsidyAcquirer {
      */
     async processBatchNonBlocking(batch, accountProxyLists) {
         const results = [];
-        const runningTasks = new Map();
         
-        // 启动所有账户的请求任务
-        batch.forEach((account, index) => {
-            const proxyList = accountProxyLists[index];
+        // 所有模式都使用并发处理，但直连模式的账户间隔在重试机制中控制
+        if (this.mode === 'direct') {
+            // 直连模式：并发执行账户，账户内重试间隔100ms
+            const runningTasks = new Map();
             
-            // 根据模式处理账户
-            if (this.mode === 'proxy') {
-                console.log(`🎯 启动账户 ${account.name}（代理模式）`);
+            // 启动所有账户的请求任务
+            batch.forEach((account, index) => {
+                const proxyList = accountProxyLists[index];
+                
+                // 启动异步任务
+                const task = this.acquireSubsidyWithRetry(account, proxyList)
+                    .then(result => {
+                        runningTasks.delete(account.phone);
+                        return result;
+                    })
+                    .catch(error => {
+                        runningTasks.delete(account.phone);
+                        const errorResult = {
+                            success: false,
+                            account: account,
+                            error: error.message || '处理异常',
+                            timestamp: new Date().toISOString()
+                        };
+                        console.log(`❌ ${account.name}: 网络异常 - ${error.message || '处理异常'}`);
+                        return errorResult;
+                    });
+                
+                runningTasks.set(account.phone, task);
+            });
+
+            // 等待所有任务完成
+            if (runningTasks.size > 0) {
+                const taskResults = await Promise.allSettled(Array.from(runningTasks.values()));
+                
+                taskResults.forEach((result) => {
+                    if (result.status === 'fulfilled') {
+                        results.push(result.value);
+                    } else {
+                        console.error(`💥 任务异常:`, result.reason);
+                    }
+                });
+            }
+            
+        } else {
+            // 代理模式：保持原有的并发处理
+            const runningTasks = new Map();
+            
+            // 启动所有账户的请求任务
+            batch.forEach((account, index) => {
+                const proxyList = accountProxyLists[index];
+                
                 const validProxies = proxyList.filter(p => p.server !== 'placeholder');
                 if (validProxies.length === 0) {
-                    console.log(`⚠️ 账户 ${account.name} 没有可用代理，跳过处理`);
+                    console.log(`❌ ${account.name}: 没有可用的代理IP`);
                     results.push({
                         success: false,
                         account: account,
@@ -744,55 +841,48 @@ class XiaomiSubsidyAcquirer {
                     });
                     return;
                 }
-            } else {
-                console.log(`🎯 启动账户 ${account.name}（直连模式）`);
-            }
-            
-            // 启动异步任务
-            const task = this.acquireSubsidyWithRetry(account, proxyList)
-                .then(result => {
-                    runningTasks.delete(account.phone);
-                    if (result.success) {
-                        console.log(`✅ 账户 ${account.name} 处理成功`);
-                    } else {
-                        console.log(`❌ 账户 ${account.name} 处理失败: ${result.error}`);
-                    }
-                    return result;
-                })
-                .catch(error => {
-                    runningTasks.delete(account.phone);
-                    console.error(`💥 账户 ${account.name} 处理异常:`, error.message);
-                    return {
-                        success: false,
-                        account: account,
-                        error: error.message || '处理异常',
-                        timestamp: new Date().toISOString()
-                    };
-                });
-            
-            runningTasks.set(account.phone, task);
-        });
-
-        // 等待所有任务完成
-        if (runningTasks.size > 0) {
-            console.log(`⏳ 等待 ${runningTasks.size} 个账户任务完成...`);
-            const taskResults = await Promise.allSettled(Array.from(runningTasks.values()));
-            
-            taskResults.forEach((result, index) => {
-                if (result.status === 'fulfilled') {
-                    results.push(result.value);
-                } else {
-                    console.error(`💥 任务异常:`, result.reason);
-                    // 从批次中找到对应的账户
-                    const account = batch[index];
-                    results.push({
-                        success: false,
-                        account: account,
-                        error: result.reason?.message || '任务异常',
-                        timestamp: new Date().toISOString()
+                
+                // 启动异步任务
+                const task = this.acquireSubsidyWithRetry(account, proxyList)
+                    .then(result => {
+                        runningTasks.delete(account.phone);
+                        return result;
+                    })
+                    .catch(error => {
+                        runningTasks.delete(account.phone);
+                        const errorResult = {
+                            success: false,
+                            account: account,
+                            error: error.message || '处理异常',
+                            timestamp: new Date().toISOString()
+                        };
+                        console.log(`❌ ${account.name}: 网络异常 - ${error.message || '处理异常'}`);
+                        return errorResult;
                     });
-                }
+                
+                runningTasks.set(account.phone, task);
             });
+
+            // 等待所有任务完成
+            if (runningTasks.size > 0) {
+                const taskResults = await Promise.allSettled(Array.from(runningTasks.values()));
+                
+                taskResults.forEach((result, index) => {
+                    if (result.status === 'fulfilled') {
+                        results.push(result.value);
+                    } else {
+                        console.error(`💥 任务异常:`, result.reason);
+                        // 从批次中找到对应的账户
+                        const account = batch[index];
+                        results.push({
+                            success: false,
+                            account: account,
+                            error: result.reason?.message || '任务异常',
+                            timestamp: new Date().toISOString()
+                        });
+                    }
+                });
+            }
         }
 
         return results;
@@ -946,11 +1036,24 @@ function filterAccountsByRegion(accounts, region) {
         return accounts.filter(account => account.regionId === '10');
     }
     
+    // 显示当前所有账户的地区分布
+    const regionStats = {};
+    accounts.forEach(account => {
+        const regionName = getRegionNameByRegionId(account.regionId);
+        regionStats[regionName] = (regionStats[regionName] || 0) + 1;
+    });
+    
+    console.log(`📊 账户地区分布统计:`);
+    Object.entries(regionStats).forEach(([regionName, count]) => {
+        console.log(`   ${regionName}: ${count} 个账户`);
+    });
+    
     const filteredAccounts = accounts.filter(account => account.regionId === regionInfo.regionId);
     console.log(`🔍 地区筛选结果: ${regionInfo.name} (${region}) - 找到 ${filteredAccounts.length}/${accounts.length} 个匹配账户`);
     
     if (filteredAccounts.length === 0) {
         console.log(`⚠️ 没有找到 ${regionInfo.name} 地区的账户，请检查账户配置`);
+        console.log(`💡 提示: 当前账户的地区分布为: ${Object.keys(regionStats).join(', ')}`);
     } else {
         console.log(`✅ 将只对 ${regionInfo.name} 地区的账户进行抢购，避免IP浪费`);
     }
@@ -1018,9 +1121,13 @@ class SmartXiaomiAcquirer {
         // 根据模式设置最大重试次数：直连模式无限制用于捡漏，代理模式限制50轮
         this.maxRetryCount = mode === 'direct' ? Infinity : 50;
         this.retryInterval = 200; // 重试间隔200ms
+        this.accountInterval = 100; // 直连模式每个账户间隔100ms
         
         // 直连模式优化配置
         this.options = options;
+        
+        // 初始化状态更新服务
+        this.statusUpdateService = new StatusUpdateService();
     }
 
     /**
@@ -1034,22 +1141,7 @@ class SmartXiaomiAcquirer {
         console.log(`👥 总账户数量: ${this.allAccounts.length}`);
         console.log(`🎯 筛选后账户数量: ${this.accounts.length}`);
         
-        // 根据模式显示不同的提示信息
-        if (this.mode === 'direct') {
-            console.log(`🔗 直连模式: 无限制抢购，用于捡漏`);
-            console.log(`⚠️ 注意: 直连模式将持续抢购直到手动停止 (Ctrl+C) 或所有账户成功`);
-            
-            // 显示直连模式优化配置
-            console.log(`📊 直连模式: 单次请求（无并发）`);
-            if (this.options.enableConnectionPool !== undefined) {
-                console.log(`🔌 连接池: ${this.options.enableConnectionPool ? '启用' : '禁用'}`);
-                if (this.options.enableConnectionPool && this.options.connectionPoolSize) {
-                    console.log(`📈 连接池大小: ${this.options.connectionPoolSize}`);
-                }
-            }
-        } else {
-            console.log(`🌐 代理模式: 最大 ${this.maxRetryCount} 轮抢购`);
-        }
+        // 配置信息已简化，重点关注tips字段输出
         
         // 第一阶段：提前3分钟准备代理IP
         await this.prepareProxies();
@@ -1155,61 +1247,27 @@ class SmartXiaomiAcquirer {
     }
 
     /**
-     * 开始循环抢购（无阻塞并发模式）
+     * 开始异步多账户抢购
      */
     async startSubsidyLoop() {
         this.isRunning = true;
-        let round = 1;
+        console.log(`🚀 启动异步多账户抢购: ${this.accounts.length} 个账户`);
+        console.log(`📊 模式: ${this.mode === 'direct' ? '直连模式' : '代理模式'}`);
+        console.log(`⏱️ 单个账户重试间隔: 100ms`);
         
-        while (this.isRunning && this.successfulAccounts.size < this.accounts.length && round <= this.maxRetryCount) {
-            // 根据模式显示不同的日志信息
-            if (this.mode === 'direct') {
-                console.log(`\n🔄 第 ${round} 轮抢购开始 (直连模式-捡漏模式)`);
-                console.log(`📊 状态: 成功 ${this.successfulAccounts.size}/${this.accounts.length}, 失败 ${this.failedAccounts.size}`);
-                console.log(`🔁 捡漏模式：将持续抢购直到手动停止或所有账户成功`);
-            } else {
-                console.log(`\n🔄 第 ${round}/${this.maxRetryCount} 轮抢购开始 (代理模式-无阻塞并发)`);
-                console.log(`📊 状态: 成功 ${this.successfulAccounts.size}/${this.accounts.length}, 失败 ${this.failedAccounts.size}`);
-            }
-            
-            // 获取未成功的账户
-            const remainingAccounts = this.accounts.filter(account => 
-                !this.successfulAccounts.has(account.phone)
-            );
-            
-            if (remainingAccounts.length === 0) {
-                console.log('🎉 所有账户都已成功抢到补贴！');
-                break;
-            }
-            
-            // 无阻塞并发执行抢购
-            await this.executeNonBlockingRound(remainingAccounts, round);
-            
-            // 显示当前轮次结果
-            console.log(`📈 第 ${round} 轮结果: 成功 ${this.successfulAccounts.size}/${this.accounts.length}`);
-            
-            // 如果还有未成功的账户，等待后继续下一轮
-            if (this.successfulAccounts.size < this.accounts.length) {
-                if (this.mode === 'direct') {
-                    // 直连模式：无限循环，等待后继续
-                    console.log(`⏳ 直连模式等待 ${this.retryInterval}ms 后继续捡漏...`);
-                } else {
-                    // 代理模式：检查是否还有轮次
-                    if (round < this.maxRetryCount) {
-                        console.log(`⏳ 等待 ${this.retryInterval}ms 后开始下一轮...`);
-                    }
-                }
-                await new Promise(resolve => setTimeout(resolve, this.retryInterval));
-            }
-            
-            round++;
-        }
+        // 为每个账户启动独立的异步抢购任务
+        const accountTasks = this.accounts.map(account => {
+            return this.startAccountAsyncLoop(account);
+        });
         
-        // 显示最终结果
-        if (this.successfulAccounts.size >= this.accounts.length) {
+        // 等待所有账户任务完成
+        await Promise.allSettled(accountTasks);
+        
+        // 检查是否所有账户都已完成或成功
+        const allSuccessful = this.successfulAccounts.size >= this.accounts.length;
+        
+        if (allSuccessful) {
             console.log('🎉 所有账户都已成功抢到补贴！');
-        } else if (round > this.maxRetryCount && this.mode === 'proxy') {
-            console.log(`⚠️ 代理模式已达到最大重试次数 ${this.maxRetryCount}，停止抢购`);
         } else if (!this.isRunning) {
             console.log('🛑 用户手动停止了抢购');
         }
@@ -1219,13 +1277,60 @@ class SmartXiaomiAcquirer {
     }
 
     /**
-     * 执行无阻塞轮次抢购
+     * 启动单个账户的异步循环抢购
+     * @param {Object} account - 账户信息
+     * @returns {Promise<void>}
+     */
+    async startAccountAsyncLoop(account) {
+        const accountIndex = this.accounts.indexOf(account);
+        const proxyList = this.accountProxyLists[accountIndex] || [];
+        
+        // 检查代理模式是否有可用代理
+        if (this.mode === 'proxy') {
+            const validProxies = proxyList.filter(p => p.server !== 'placeholder');
+            if (validProxies.length === 0) {
+                console.log(`❌ ${account.name}: 没有可用的代理IP，跳过账户`);
+                return;
+            }
+        }
+        
+        const acquirer = new XiaomiSubsidyAcquirer(this.mode, this.proxyType, this.options);
+        let attemptCount = 0;
+        
+        // 单个账户的异步循环抢购，100ms间隔重试
+        while (this.isRunning && !this.successfulAccounts.has(account.phone)) {
+            attemptCount++;
+            
+            try {
+                const result = await acquirer.acquireSubsidy(account, proxyList);
+                
+                if (result.success) {
+                    this.successfulAccounts.add(account.phone);
+                    console.log(`🎉 ${account.name}(${account.phone}) 抢购成功！ (尝试${attemptCount}次)`);
+                    return; // 成功后退出循环
+                }
+                
+                // 失败后等待100ms再重试
+                await new Promise(resolve => setTimeout(resolve, 100));
+                
+            } catch (error) {
+                console.log(`❌ ${account.name}: 抢购异常 - ${error.message}`);
+                // 异常后也等待100ms再重试
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+    }
+
+    /**
+     * 执行无阻塞轮次抢购（已弃用，保留用于兼容性）
      * @param {Array} remainingAccounts - 剩余账户列表
      * @param {number} round - 当前轮次
      */
     async executeNonBlockingRound(remainingAccounts, round) {
-        const runningTasks = new Map();
         const roundResults = [];
+        
+        // 所有模式都使用并发处理，账户间隔在重试机制中控制
+        const runningTasks = new Map();
         
         // 启动所有账户的抢购任务
         remainingAccounts.forEach((account) => {
@@ -1241,7 +1346,7 @@ class SmartXiaomiAcquirer {
                 // 代理模式：检查是否有可用代理
                 const validProxies = proxyList.filter(p => p.server !== 'placeholder');
                 if (validProxies.length === 0) {
-                    console.log(`⚠️ 账户 ${account.name} 没有可用代理，跳过处理`);
+                    console.log(`❌ ${account.name}: 没有可用的代理IP`);
                     roundResults.push({
                         success: false,
                         account: account,
@@ -1250,27 +1355,31 @@ class SmartXiaomiAcquirer {
                     });
                     return;
                 }
-                console.log(`🚀 账户 ${account.name}: 启动代理模式无阻塞并发请求...`);
-            } else {
-                // 直连模式
-                console.log(`🚀 账户 ${account.name}: 启动直连模式请求...`);
             }
             
             // 启动异步任务
             const task = this.executeAccountTask(account, proxyList, round)
                 .then(result => {
                     runningTasks.delete(account.phone);
+                    if (result.success) {
+                        this.successfulAccounts.add(result.account.phone);
+                    } else {
+                        this.failedAccounts.add(result.account.phone);
+                    }
                     return result;
                 })
                 .catch(error => {
                     runningTasks.delete(account.phone);
-                    console.error(`💥 账户 ${account.name} 任务异常:`, error.message);
-                    return {
+                    const errorResult = {
                         success: false,
                         account: account,
                         error: error.message || '任务异常',
                         timestamp: new Date().toISOString()
                     };
+                    console.log(`❌ ${account.name}: 任务异常 - ${error.message || '处理异常'}`);
+                    roundResults.push(errorResult);
+                    this.failedAccounts.add(account.phone);
+                    return errorResult;
                 });
             
             runningTasks.set(account.phone, task);
@@ -1278,7 +1387,6 @@ class SmartXiaomiAcquirer {
 
         // 等待所有任务完成
         if (runningTasks.size > 0) {
-            console.log(`⏳ 第 ${round} 轮等待 ${runningTasks.size} 个账户任务完成...`);
             const taskResults = await Promise.allSettled(Array.from(runningTasks.values()));
             
             taskResults.forEach((result) => {
@@ -1289,17 +1397,6 @@ class SmartXiaomiAcquirer {
                 }
             });
         }
-
-        // 处理轮次结果
-        roundResults.forEach((result) => {
-            if (result.success) {
-                console.log(`✅ 账户 ${result.account.name} 抢补贴成功！`);
-                this.successfulAccounts.add(result.account.phone);
-            } else {
-                console.log(`❌ 账户 ${result.account.name} 抢补贴失败: ${result.error}`);
-                this.failedAccounts.add(result.account.phone);
-            }
-        });
     }
 
     /**
@@ -1433,8 +1530,9 @@ async function selectStartTime(rl) {
  */
 async function selectRegion(rl) {
     console.log('\n🌍 请选择抢购地区:');
+    console.log('系统将根据选择的地区，自动筛选出对应region_id的用户进行抢购');
     console.log('1. 重庆 (cq) - regionId: 10');
-    console.log('2. 云南 (yn) - regionId: 14');
+    console.log('2. 云南 (yn) - regionId: 21');
     console.log('3. 福建 (fj) - regionId: 23');
     
     const choice = await askQuestion(rl, '\n请输入选择 (1-3): ');
@@ -1476,61 +1574,18 @@ async function selectMode(rl) {
             
             // 直连模式配置选项
             console.log('\n🔗 直连模式配置:');
-            console.log('📝 注意: 直连模式使用单次请求，通过连接池复用提升性能');
-            
-            // 连接池配置
-            console.log('\n🔌 连接池配置:');
-            console.log('1. 启用连接池 (推荐) - 提升速度，节省握手时间');
-            console.log('2. 禁用连接池 - 传统连接方式');
-            
-            const poolChoice = await askQuestion(rl, '请选择连接池配置 (1-2): ');
-            const enableConnectionPool = poolChoice !== '2';
-            
-            // 连接池大小配置（如果启用）
-            let connectionPoolSize = 20;
-            if (enableConnectionPool) {
-                console.log('\n📈 连接池大小配置:');
-                console.log('1. 20个连接 (默认)');
-                console.log('2. 50个连接 (高并发)');
-                console.log('3. 自定义大小');
-                
-                const poolSizeChoice = await askQuestion(rl, '请选择连接池大小 (1-3): ');
-                switch (poolSizeChoice) {
-                    case '1':
-                    case '':
-                        connectionPoolSize = 20;
-                        break;
-                    case '2':
-                        connectionPoolSize = 50;
-                        break;
-                    case '3':
-                        const customPoolSize = await askQuestion(rl, '请输入自定义连接池大小 (10-100): ');
-                        const parsedPoolSize = parseInt(customPoolSize);
-                        if (parsedPoolSize >= 10 && parsedPoolSize <= 100) {
-                            connectionPoolSize = parsedPoolSize;
-                        } else {
-                            console.log('⚠️ 无效输入，使用默认值 20');
-                            connectionPoolSize = 20;
-                        }
-                        break;
-                    default:
-                        console.log('⚠️ 无效选择，使用默认值 20');
-                        connectionPoolSize = 20;
-                }
-            }
+            console.log('📝 注意: 直连模式多个账户同步并发执行，同一账户重试间隔100ms，连接池已禁用');
             
             options = {
                 directConcurrency: 1, // 直连模式固定为单次请求
-                enableConnectionPool,
-                connectionPoolSize
+                enableConnectionPool: false, // 连接池已禁用
+                retryInterval: 100 // 重试间隔100ms
             };
             
             console.log(`\n✅ 直连模式配置完成:`);
-            console.log(`   📊 请求模式: 单次请求（无并发）`);
-            console.log(`   🔌 连接池: ${enableConnectionPool ? '启用' : '禁用'}`);
-            if (enableConnectionPool) {
-                console.log(`   📈 连接池大小: ${connectionPoolSize}`);
-            }
+            console.log(`   📊 请求模式: 多个账户并发执行`);
+            console.log(`   🔌 连接池: 已禁用，使用独立连接`);
+            console.log(`   ⏱️ 重试间隔: 100ms`);
             break;
             
         case '2':
@@ -1547,8 +1602,8 @@ async function selectMode(rl) {
             mode = 'direct';
             options = {
                 directConcurrency: 1,
-                enableConnectionPool: true,
-                connectionPoolSize: 20
+                enableConnectionPool: false,
+                retryInterval: 100
             };
     }
     
@@ -1591,6 +1646,15 @@ async function interactiveXiaomiExecution(accounts = null) {
             }
         }
         
+        // 为没有accountId的账户添加accountId字段（使用uniqueId或生成一个）
+        accounts = accounts.map(account => {
+            if (!account.accountId) {
+                // 优先使用uniqueId，如果也没有则生成一个
+                account.accountId = account.uniqueId || `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            }
+            return account;
+        });
+        
         console.log(`📋 当前账户总数: ${accounts.length}`);
         
         // 1. 选择抢购时间
@@ -1617,7 +1681,7 @@ async function interactiveXiaomiExecution(accounts = null) {
         if (mode === 'proxy') {
             console.log(`✅ 代理类型: ${proxyType}`);
         } else {
-            console.log(`✅ 直连模式配置: 单次请求, 连接池=${options.enableConnectionPool ? '启用' : '禁用'}`);
+            console.log(`✅ 直连模式配置: 并发执行, 重试间隔${options.retryInterval || 100}ms, 连接池=禁用`);
         }
         
         // 5. 确认信息
@@ -1727,7 +1791,7 @@ if (process.argv[1] === __filename) {
         console.log('🌐 从在线API获取用户信息...');
         
         // 从在线API获取用户账户信息
-        const accountList = await fetchOnlineUserAccounts(1, 20);
+        const accountList = await fetchOnlineUserAccounts(1, 100);
         
         if (!accountList || accountList.length === 0) {
             console.error('❌ 未获取到任何用户账户信息，程序退出');

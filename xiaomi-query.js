@@ -8,6 +8,143 @@ import fs from 'fs';
 import { notificationService } from './notification.js';
 
 /**
+ * 在线用户信息获取配置
+ */
+const ONLINE_API_CONFIG = {
+    baseURL: 'http://8.148.75.17:3000',
+    endpoint: '/api/purchase/records',
+    defaultLimit: 20
+};
+
+/**
+ * 解析cookie字符串，提取serviceToken和userId
+ * @param {string} cookieString - cookie字符串
+ * @returns {Object} 包含serviceToken和userId的对象
+ */
+function parseCookie(cookieString) {
+    const result = {
+        serviceToken: '',
+        userId: ''
+    };
+    
+    if (!cookieString) {
+        return result;
+    }
+    
+    try {
+        // 移除可能的前后空格
+        const cleanCookie = cookieString.trim();
+        
+        // 查找serviceToken
+        const serviceTokenMatch = cleanCookie.match(/serviceToken=([^;]+)/);
+        if (serviceTokenMatch) {
+            result.serviceToken = serviceTokenMatch[1];
+        }
+        
+        // 查找userId
+        const userIdMatch = cleanCookie.match(/userId=([^;]+)/);
+        if (userIdMatch) {
+            result.userId = userIdMatch[1];
+        }
+        
+        console.log(`🍪 解析cookie成功: serviceToken=${result.serviceToken ? '已获取' : '未找到'}, userId=${result.userId || '未找到'}`);
+        
+    } catch (error) {
+        console.error(`💥 解析cookie失败:`, error.message);
+    }
+    
+    return result;
+}
+
+/**
+ * 从在线API获取用户信息
+ * @param {number} page - 页码，默认为1
+ * @param {number} limit - 每页数量，默认为20
+ * @returns {Promise<Array>} 用户信息数组
+ */
+async function fetchOnlineUserAccounts(page = 1, limit = 20) {
+    try {
+        console.log(`🌐 正在从在线API获取用户信息... (第${page}页，每页${limit}条)`);
+        
+        const url = `${ONLINE_API_CONFIG.baseURL}${ONLINE_API_CONFIG.endpoint}`;
+        const params = {
+            page: page,
+            limit: limit,
+            is_success:"false",
+            // name:'tdy'
+        };
+        
+        const response = await axios.get(url, { 
+            params: params,
+            timeout: 10000 // 10秒超时
+        });
+        
+        if (response.data && response.data.success && response.data.data) {
+            const userRecords = response.data.data;
+            console.log(`✅ 成功获取 ${userRecords.length} 条用户记录`);
+            
+            // 将API数据转换为账户信息格式
+            const accounts = userRecords.map(record => {
+                // 解析cookie中的serviceToken和userId
+                const cookieData = parseCookie(record.cookie);
+                
+                return {
+                    name: record.name,
+                    phone: record.phone,
+                    accId: `online_acc_${record.id}`,
+                    grabToken: `online_token_${record.id}`,
+                    uniqueId: record.id.toString(),
+                    accountId: record.id, // 保留原始accountId用于状态更新
+                    serviceToken: cookieData.serviceToken || '',
+                    userId: cookieData.userId || '',
+                    dId: 'OXBJOW5jM2cyZDd2bUh2TTJncDFHS0pCTFl3SUx1QUhEcXFMRytRN2x6aURaK3NSVXV2aHZmUGR6UWtoWDhIUg==', // 默认值
+                    dModel: 'aVBob25lMTcsMQ==', // 默认值
+                    sentryTrace: '1e52fc5869554d0b8f935be162226a76-dda486e670d9448d-1', // 默认值
+                    baggage: 'sentry-environment=RELEASE,sentry-public_key=ee0a98b8e8e3417c89db4f9fd258ef62,sentry-release=com.xiaomi.mishop%405.2.257%2B2509112112,sentry-sample_rate=1,sentry-trace_id=1e52fc5869554d0b8f935be162226a76,sentry-transaction=MSNewMainViewController', // 默认值
+                    cateCode: record.product_type || 'B01', // 使用API中的product_type
+                    regionId: record.region_id ? record.region_id.toString() : '10', // 使用API中的region_id，默认重庆地区
+                    activityCategory: '100', // 默认值
+                    paymentMode: 'UNIONPAY', // 默认值
+                    // 保留原始记录信息用于调试
+                    originalRecord: {
+                        id: record.id,
+                        is_success: record.is_success,
+                        created_at: record.created_at,
+                        updated_at: record.updated_at,
+                        purchase_time: record.purchase_time,
+                        purchaser: record.purchaser
+                    }
+                };
+            });
+            
+            console.log(`📊 转换完成: ${accounts.length} 个账户信息`);
+            
+            // 显示获取到的账户信息摘要
+            console.log(`📋 账户信息摘要:`);
+            accounts.forEach((account, index) => {
+                console.log(`   ${index + 1}. ${account.name} (${account.phone}) - ${account.cateCode}`);
+            });
+            
+            return accounts;
+        } else {
+            throw new Error('API响应格式不正确或请求失败');
+        }
+        
+    } catch (error) {
+        console.error(`💥 获取在线用户信息失败:`, error.message);
+        
+        // 如果是网络错误，提供更详细的错误信息
+        if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+            console.error(`🌐 网络连接错误，请检查API服务是否正常运行: ${ONLINE_API_CONFIG.baseURL}`);
+        } else if (error.response) {
+            console.error(`📡 API响应错误: ${error.response.status} - ${error.response.statusText}`);
+        }
+        
+        throw error;
+    }
+}
+
+/**
  * 小米查券服务
  */
 class XiaomiQueryService {
@@ -504,7 +641,7 @@ class XiaomiQueryService {
 }
 
 // 导出类和函数
-export { XiaomiQueryService };
+export { XiaomiQueryService, fetchOnlineUserAccounts };
 
 // 如果直接运行此文件
 if (process.argv[1] === new URL(import.meta.url).pathname) {

@@ -1,6 +1,6 @@
 // run-xiaomi-query.js - 直接运行小米查券功能
 import fs from 'fs';
-import { XiaomiQueryService } from './xiaomi-query.js';
+import { XiaomiQueryService, fetchOnlineUserAccounts } from './xiaomi-query.js';
 
 /**
  * 显示帮助信息
@@ -28,6 +28,7 @@ function showHelp() {
   node run-xiaomi-query.js --phone 18602385677 --mode proxy
 
 🎯 功能说明:
+  - 从在线API获取用户信息进行查券（支持本地文件备用）
   - 默认查询所有用户账户的券信息
   - 使用 --phone 参数可以查询指定手机号的用户
   - 支持直连模式和代理模式
@@ -64,14 +65,50 @@ async function runXiaomiQuery() {
             process.exit(1);
         }
 
-        console.log('📋 读取账户信息...');
+        console.log('🌐 从在线API获取用户信息...');
         
-        // 读取账户信息
-        const accountData = fs.readFileSync('xiaomi-accounts.json', 'utf8');
-        const accounts = JSON.parse(accountData);
-        const accountList = Array.isArray(accounts) ? accounts : [accounts];
+        // 从在线API获取用户信息
+        let accountList;
+        try {
+            accountList = await fetchOnlineUserAccounts(1, 100);
+            if (!accountList || accountList.length === 0) {
+                console.error('❌ 未获取到任何用户账户信息，程序退出');
+                // 尝试使用本地账户文件作为备用方案
+                console.log('🔄 尝试使用本地账户文件作为备用方案...');
+                try {
+                    const accountData = fs.readFileSync('xiaomi-accounts.json', 'utf8');
+                    accountList = JSON.parse(accountData);
+                    accountList = Array.isArray(accountList) ? accountList : [accountList];
+                    console.log('✅ 成功读取本地账户文件作为备用');
+                } catch (localError) {
+                    console.error('💥 本地账户文件也读取失败:', localError.message);
+                    process.exit(1);
+                }
+            }
+        } catch (error) {
+            console.error('💥 获取在线用户信息失败:', error.message);
+            console.log('🔄 尝试使用本地账户文件作为备用方案...');
+            try {
+                const accountData = fs.readFileSync('xiaomi-accounts.json', 'utf8');
+                accountList = JSON.parse(accountData);
+                accountList = Array.isArray(accountList) ? accountList : [accountList];
+                console.log('✅ 成功读取本地账户文件作为备用');
+            } catch (localError) {
+                console.error('💥 本地账户文件也读取失败:', localError.message);
+                process.exit(1);
+            }
+        }
         
-        console.log(`✅ 成功读取 ${accountList.length} 个账户信息`);
+        // 为没有accountId的账户添加accountId字段（使用uniqueId或生成一个）
+        accountList = accountList.map(account => {
+            if (!account.accountId) {
+                // 优先使用uniqueId，如果也没有则生成一个
+                account.accountId = account.uniqueId || `local_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            }
+            return account;
+        });
+        
+        console.log(`✅ 成功获取 ${accountList.length} 个账户信息`);
 
         // 显示查询配置
         console.log(`🔧 运行模式: ${mode === 'direct' ? '直连模式' : '代理模式'}`);
