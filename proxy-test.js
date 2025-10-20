@@ -16,14 +16,57 @@ export async function testProxyIP(proxyInfo) {
 
         console.log(`🔍 正在测试 ${proxyInfo.source} 代理IP: ${proxyInfo.server}:${proxyInfo.port}`);
         
-        const response = await axios.get('https://httpbin.org/ip', {
-            httpsAgent: agent,
-            timeout: 5000
-        });
+        // 使用多个快速测试地址，按优先级尝试（优先选择响应更快的服务）
+        const testUrls = [
+            'https://api.ipify.org?format=json',        // 快速响应，简单JSON格式
+            'https://httpbin.org/ip',                   // 原服务，稳定可靠
+            'https://ipinfo.io/json',                   // 备用快速服务
+            'https://api.myip.com'                      // 另一个备用服务
+        ];
+        
+        let response = null;
+        let lastError = null;
+        
+        for (const testUrl of testUrls) {
+            try {
+                response = await axios.get(testUrl, {
+                    httpsAgent: agent,
+                    timeout: 4000  // 4秒超时验证
+                });
+                break; // 成功则跳出循环
+            } catch (error) {
+                lastError = error;
+                // 仅在最后一个地址失败时输出详细错误信息
+                if (testUrl === testUrls[testUrls.length - 1]) {
+                    console.log(`⚠️ 所有测试地址都无法访问，最后错误: ${error.message}`);
+                }
+                continue; // 尝试下一个地址
+            }
+        }
+        
+        if (!response) {
+            throw lastError || new Error('所有测试地址都无法访问');
+        }
 
         console.log('response', response.data);
 
-        const currentIP = response.data.origin;
+        // 根据不同的API返回格式解析IP地址
+        let currentIP = null;
+        const responseData = response.data;
+        
+        if (responseData.ip) {
+            // api.ipify.org, ipinfo.io 格式: {"ip": "xxx.xxx.xxx.xxx"}
+            currentIP = responseData.ip;
+        } else if (responseData.origin) {
+            // httpbin.org 格式: {"origin": "xxx.xxx.xxx.xxx"}
+            currentIP = responseData.origin;
+        } else if (typeof responseData === 'string') {
+            // api.myip.com 可能返回纯文本格式
+            currentIP = responseData.trim();
+        } else {
+            throw new Error('无法解析IP地址响应格式');
+        }
+        
         console.log('📍 当前请求IP:', currentIP);
 
         return {

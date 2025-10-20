@@ -189,6 +189,206 @@ function parseCookie(cookieString) {
 }
 
 /**
+ * 共享代理IP管理器
+ */
+class SharedProxyManager {
+    constructor(proxyType = 1) {
+        this.proxyType = proxyType;
+        this.currentProxy = null;
+        this.proxyExpiryTime = null;
+        this.proxyValidationTimeout = 4000; // 4秒超时
+        this.isRefreshing = false;
+        this.proxyLifetime = 5 * 60 * 1000; // 5分钟过期时间
+        
+        // 重试配置
+        this.maxRetryAttempts = 10; // 最大重试次数
+        this.retryDelay = 1000; // 重试间隔1秒
+        this.retryCount = 0; // 当前重试次数
+    }
+
+    /**
+     * 获取当前有效的代理IP（带重试机制）
+     * @returns {Promise<Object|null>} 代理信息
+     */
+    async getValidProxy() {
+        // 如果当前代理有效且未过期，直接返回
+        if (this.currentProxy && this.proxyExpiryTime && Date.now() < this.proxyExpiryTime) {
+            return this.currentProxy;
+        }
+
+        // 如果正在刷新，等待刷新完成，然后检查结果
+        if (this.isRefreshing) {
+            await this.waitForRefresh();
+            // 等待完成后，如果仍然没有有效代理，再次尝试刷新
+            if (!this.currentProxy || !this.proxyExpiryTime || Date.now() >= this.proxyExpiryTime) {
+                console.log('🔄 等待刷新完成但仍无有效代理，重新尝试刷新...');
+                return await this.refreshProxy();
+            }
+            return this.currentProxy;
+        }
+
+        // 开始刷新代理
+        return await this.refreshProxy();
+    }
+
+    /**
+     * 刷新代理IP（带重试机制）
+     * @returns {Promise<Object|null>} 新的代理信息
+     */
+    async refreshProxy() {
+        this.isRefreshing = true;
+        this.retryCount = 0;
+        
+        try {
+            while (this.retryCount < this.maxRetryAttempts) {
+                try {
+                    this.retryCount++;
+                    console.log(`🔄 正在获取新的共享代理IP... (尝试 ${this.retryCount}/${this.maxRetryAttempts})`);
+                    
+                    // 获取一个新的代理IP
+                    const proxyList = await getProxyFromSource(this.proxyType, 1);
+                    if (!proxyList || proxyList.length === 0) {
+                        console.log(`❌ 无法获取代理IP，重试 ${this.retryCount}/${this.maxRetryAttempts}`);
+                        if (this.retryCount < this.maxRetryAttempts) {
+                            await new Promise(resolve => setTimeout(resolve, this.retryDelay));
+                            continue;
+                        }
+                        console.error('💥 达到最大重试次数，无法获取代理IP');
+                        return null;
+                    }
+
+                    const proxy = proxyList[0];
+                    
+                    // 快速验证代理IP（4秒超时）
+                    const testResult = await this.quickValidateProxy(proxy);
+                    
+                    if (testResult.success) {
+                        // 验证成功，重置重试计数并返回
+                        this.retryCount = 0;
+                        this.currentProxy = {
+                            ...proxy,
+                            validatedIP: testResult.ip,
+                            validatedAt: Date.now()
+                        };
+                        this.proxyExpiryTime = Date.now() + this.proxyLifetime;
+                        
+                        console.log(`✅ 共享代理IP更新成功: ${proxy.server}:${proxy.port} (${testResult.ip}) 验证耗时: ${testResult.duration}ms`);
+                        return this.currentProxy;
+                    } else {
+                        console.log(`❌ 代理IP验证失败: ${testResult.error}，重试 ${this.retryCount}/${this.maxRetryAttempts}`);
+                        if (this.retryCount < this.maxRetryAttempts) {
+                            await new Promise(resolve => setTimeout(resolve, this.retryDelay));
+                            continue;
+                        }
+                        console.error('💥 达到最大重试次数，无法获取有效的代理IP');
+                        return null;
+                    }
+                } catch (error) {
+                    console.error(`💥 刷新代理IP失败: ${error.message}，重试 ${this.retryCount}/${this.maxRetryAttempts}`);
+                    
+                    if (this.retryCount < this.maxRetryAttempts) {
+                        await new Promise(resolve => setTimeout(resolve, this.retryDelay));
+                        continue;
+                    }
+                    
+                    console.error('💥 达到最大重试次数，代理IP获取完全失败');
+                    return null;
+                }
+            }
+            
+            // 如果走到这里，说明达到最大重试次数但没有成功
+            console.error('💥 代理IP获取失败：达到最大重试次数');
+            return null;
+        } finally {
+            this.isRefreshing = false;
+        }
+    }
+
+    /**
+     * 快速验证代理IP（4秒超时）
+     * @param {Object} proxyInfo - 代理信息
+     * @returns {Promise<Object>} 验证结果
+     */
+    async quickValidateProxy(proxyInfo) {
+        try {
+            const startTime = Date.now();
+            
+            // 使用快速验证，4秒超时
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('代理验证超时')), this.proxyValidationTimeout);
+            });
+
+            const validatePromise = testProxyIP(proxyInfo);
+            
+            const result = await Promise.race([validatePromise, timeoutPromise]);
+            const duration = Date.now() - startTime;
+            
+            if (result.success && duration < this.proxyValidationTimeout) {
+                return {
+                    success: true,
+                    ip: result.ip,
+                    duration: duration
+                };
+            } else {
+                return {
+                    success: false,
+                    error: duration >= this.proxyValidationTimeout ? '验证超时' : result.error
+                };
+            }
+        } catch (error) {
+            return {
+                success: false,
+                error: error.message
+            };
+        }
+    }
+
+    /**
+     * 等待刷新完成
+     * @returns {Promise<void>}
+     */
+    async waitForRefresh() {
+        const maxWaitTime = 10000; // 最多等待10秒
+        const checkInterval = 100; // 每100ms检查一次
+        let waited = 0;
+
+        while (this.isRefreshing && waited < maxWaitTime) {
+            await new Promise(resolve => setTimeout(resolve, checkInterval));
+            waited += checkInterval;
+        }
+    }
+
+    /**
+     * 检查代理是否即将过期（提前1分钟刷新）
+     */
+    shouldRefreshProxy() {
+        if (!this.proxyExpiryTime) return true;
+        const refreshThreshold = this.proxyLifetime - 60 * 1000; // 提前1分钟
+        return (this.proxyExpiryTime - Date.now()) < refreshThreshold;
+    }
+
+    /**
+     * 获取代理状态信息
+     */
+    getStatus() {
+        return {
+            hasProxy: !!this.currentProxy,
+            isValid: this.currentProxy && this.proxyExpiryTime && Date.now() < this.proxyExpiryTime,
+            expiryTime: this.proxyExpiryTime,
+            remainingTime: this.proxyExpiryTime ? Math.max(0, this.proxyExpiryTime - Date.now()) : 0,
+            isRefreshing: this.isRefreshing,
+            retryCount: this.retryCount,
+            maxRetryAttempts: this.maxRetryAttempts,
+            currentProxy: this.currentProxy ? {
+                server: this.currentProxy.server,
+                port: this.currentProxy.port,
+                validatedIP: this.currentProxy.validatedIP
+            } : null
+        };
+    }
+}
+
+/**
  * 服务器状态更新服务
  */
 class StatusUpdateService {
@@ -281,6 +481,9 @@ class XiaomiSubsidyAcquirer {
         // 初始化状态更新服务
         this.statusUpdateService = new StatusUpdateService();
         
+        // 初始化共享代理管理器（仅在代理模式下使用）
+        this.sharedProxyManager = mode === 'proxy' ? new SharedProxyManager(proxyType) : null;
+        
         // 模式配置日志已移除，重点关注业务结果
     }
 
@@ -366,21 +569,29 @@ class XiaomiSubsidyAcquirer {
     /**
      * 执行补贴获取请求（支持直连模式和代理模式）
      * @param {Object} accountInfo - 账户信息
-     * @param {Array} proxyList - 代理IP列表
+     * @param {Array} proxyList - 代理IP列表（已弃用，保留兼容性）
      * @returns {Promise<Object>} 请求结果
      */
-    async acquireSubsidy(accountInfo, proxyList) {
+    async acquireSubsidy(accountInfo, proxyList = null) {
         const startTime = Date.now();
         
         try {
             if (this.mode === 'proxy') {
-                // 代理模式：使用3个代理IP并发请求（无阻塞模式）
-                if (!proxyList || proxyList.length === 0) {
-                    throw new Error('代理模式下需要提供代理IP列表');
+                // 代理模式：使用共享代理IP（新的共享模式）
+                if (!this.sharedProxyManager) {
+                    throw new Error('代理模式下共享代理管理器未初始化');
                 }
 
-                // 无阻塞并发执行：使用Promise.race获取最快成功的结果
-                return await this.executeNonBlockingProxyRequests(accountInfo, proxyList, startTime);
+                // 获取当前有效的共享代理IP（带重试机制）
+                const sharedProxy = await this.sharedProxyManager.getValidProxy();
+                if (!sharedProxy) {
+                    // 如果仍然获取不到有效代理，记录错误信息并抛出异常
+                    const status = this.sharedProxyManager.getStatus();
+                    throw new Error(`无法获取有效的共享代理IP - 重试次数: ${status.retryCount}/${status.maxRetryAttempts}`);
+                }
+
+                // 使用共享代理执行单次请求
+                return await this.executeSingleRequest(accountInfo, sharedProxy, 1);
 
             } else {
                 // 直连模式：单次请求，每个账户独立执行
@@ -394,7 +605,7 @@ class XiaomiSubsidyAcquirer {
             const result = {
                 success: false,
                 account: accountInfo,
-                proxy: this.mode === 'proxy' && proxyList && proxyList.length > 0 ? proxyList[0] : null,
+                proxy: this.mode === 'proxy' && this.sharedProxyManager ? this.sharedProxyManager.currentProxy : null,
                 error: error.message,
                 duration: duration,
                 timestamp: new Date().toISOString(),
@@ -415,14 +626,14 @@ class XiaomiSubsidyAcquirer {
      */
     async executeNonBlockingProxyRequests(accountInfo, proxyList, startTime) {
         const maxConcurrent = Math.min(3, proxyList.length);
-        const promises = [];
+                const promises = [];
         let firstSuccess = null;
         let completedCount = 0;
         let errorMessages = [];
         
         // 创建所有并发请求
         for (let i = 0; i < maxConcurrent; i++) {
-            const proxy = proxyList[i];
+                    const proxy = proxyList[i];
             const promise = this.executeSingleRequest(accountInfo, proxy, i + 1)
                 .then(result => {
                     completedCount++;
@@ -477,21 +688,21 @@ class XiaomiSubsidyAcquirer {
 
         // 返回第一个失败结果
         const firstResult = allResults.find(r => r.status === 'fulfilled');
-        if (firstResult) {
-            return firstResult.value;
+                    if (firstResult) {
+                        return firstResult.value;
         }
 
         // 所有都失败
-        return {
-            success: false,
-            account: accountInfo,
+                        return {
+                            success: false,
+                            account: accountInfo,
             proxy: proxyList[0],
             error: `代理模式并发${maxConcurrent}次请求全部失败: ${errorMessages.join(', ')}`,
-            duration: duration,
-            timestamp: new Date().toISOString(),
-            isNetworkError: true
-        };
-    }
+                            duration: duration,
+                            timestamp: new Date().toISOString(),
+                            isNetworkError: true
+                        };
+                    }
 
     /**
      * 超高速无阻塞代理请求执行器（实验性功能）
@@ -538,14 +749,14 @@ class XiaomiSubsidyAcquirer {
         const raceResult = await Promise.race(promises);
         
         if (raceResult.success) {
-            const duration = Date.now() - startTime;
+                const duration = Date.now() - startTime;
             console.log(`⚡ 账户 ${accountInfo.name} 超高速代理请求成功，总耗时: ${duration}ms`);
             return raceResult;
-        }
+            }
 
         // 如果没有立即成功，等待所有完成
         const allResults = await Promise.allSettled(promises);
-        const duration = Date.now() - startTime;
+            const duration = Date.now() - startTime;
         
         // 找到第一个成功的结果
         for (const result of allResults) {
@@ -563,14 +774,14 @@ class XiaomiSubsidyAcquirer {
 
         // 所有都失败
         return {
-            success: false,
-            account: accountInfo,
+                success: false,
+                account: accountInfo,
             proxy: proxyList[0],
             error: '所有代理请求都失败',
-            duration: duration,
-            timestamp: new Date().toISOString(),
+                duration: duration,
+                timestamp: new Date().toISOString(),
             isNetworkError: true
-        };
+            };
     }
 
     /**
@@ -609,18 +820,18 @@ class XiaomiSubsidyAcquirer {
             const currentTime = new Date().toLocaleTimeString();
             
             if (isSuccessful) {
-                result.success = true;
-                result.message = '抢券成功';
-                result.tips = '';
-                
+                    result.success = true;
+                    result.message = '抢券成功';
+                    result.tips = '';
+                    
                 // 使用简洁的日志格式，参考RushPurchase的格式
                 console.log(`${currentTime} 🎉 ${accountInfo.name}(${accountInfo.phone}) 抢券成功！`);
                 
                 // 处理抢购成功后的操作
                 await this.handleSuccess(accountInfo, response.data);
-                
-            } else {
-                result.success = false;
+                    
+                } else {
+                    result.success = false;
                 const tips = response.data && response.data.data && response.data.data.tips;
                 const tipsMessage = tips || (response.data.data && response.data.data.message) || response.data.message || '抢券失败';
                 result.error = tipsMessage;
@@ -746,12 +957,15 @@ class XiaomiSubsidyAcquirer {
             let accountProxyLists = [];
             
             if (this.mode === 'proxy') {
-                // 代理模式：为每个账户准备3个代理IP
-                accountProxyLists = await concurrentProxyManager.prepareProxiesForAccounts(
-                    batch, 
-                    this.proxyType, 
-                    3
-                );
+                // 代理模式：使用共享代理管理器（不再为每个账户分配单独的代理）
+                if (!this.sharedProxyManager) {
+                    // 如果没有共享代理管理器，创建一个
+                    this.sharedProxyManager = new SharedProxyManager(this.proxyType);
+                    await this.sharedProxyManager.refreshProxy();
+                }
+                
+                // 创建空的代理列表，因为现在使用共享代理
+                accountProxyLists = batch.map(() => []); // 空列表，acquirer内部会使用sharedProxyManager
             } else {
                 // 直连模式：创建空的代理列表
                 accountProxyLists = batch.map(() => []); // 创建空的代理列表
@@ -814,36 +1028,40 @@ class XiaomiSubsidyAcquirer {
                 const taskResults = await Promise.allSettled(Array.from(runningTasks.values()));
                 
                 taskResults.forEach((result) => {
-                    if (result.status === 'fulfilled') {
-                        results.push(result.value);
+                if (result.status === 'fulfilled') {
+                    results.push(result.value);
                     } else {
                         console.error(`💥 任务异常:`, result.reason);
                     }
                 });
             }
             
-        } else {
-            // 代理模式：保持原有的并发处理
+                } else {
+            // 代理模式：使用共享代理管理器
             const runningTasks = new Map();
             
-            // 启动所有账户的请求任务
-            batch.forEach((account, index) => {
-                const proxyList = accountProxyLists[index];
-                
-                const validProxies = proxyList.filter(p => p.server !== 'placeholder');
-                if (validProxies.length === 0) {
-                    console.log(`❌ ${account.name}: 没有可用的代理IP`);
+            // 检查共享代理管理器是否可用
+            if (!this.sharedProxyManager) {
+                console.log(`❌ 代理模式：共享代理管理器未初始化`);
+                batch.forEach(account => {
                     results.push({
                         success: false,
                         account: account,
-                        error: '没有可用的代理IP',
+                        error: '共享代理管理器未初始化',
                         timestamp: new Date().toISOString()
                     });
-                    return;
-                }
+                });
+                return results;
+            }
+            
+            // 启动所有账户的请求任务
+            batch.forEach((account, index) => {
+                // 为每个账户创建独立的acquirer，并传递共享代理管理器
+                const acquirer = new XiaomiSubsidyAcquirer(this.mode, this.proxyType, this.options);
+                acquirer.sharedProxyManager = this.sharedProxyManager;
                 
                 // 启动异步任务
-                const task = this.acquireSubsidyWithRetry(account, proxyList)
+                const task = acquirer.acquireSubsidyWithRetry(account, [])
                     .then(result => {
                         runningTasks.delete(account.phone);
                         return result;
@@ -1085,7 +1303,7 @@ export async function executeXiaomiBatch(accounts, proxyType = 1, region = 'cq')
 
         const acquirer = new XiaomiSubsidyAcquirer('direct', proxyType, this.options);
         const results = await acquirer.processBatch(filteredAccounts, proxyType);
-
+        
         // 打印统计信息
         acquirer.printStatistics(results);
 
@@ -1167,36 +1385,26 @@ class SmartXiaomiAcquirer {
         }
 
         if (this.mode === 'proxy') {
-            console.log('🔧 代理模式：准备代理IP...');
+            console.log('🔧 代理模式：准备共享代理IP...');
             
-            // 代理模式：为所有账户准备代理IP
-            this.accountProxyLists = await concurrentProxyManager.prepareProxiesForAccounts(
-                this.accounts, 
-                this.proxyType, 
-                3
-            );
+            // 代理模式：初始化共享代理管理器，获取一个共享代理IP
+            this.sharedProxyManager = new SharedProxyManager(this.proxyType);
             
-            // 统计和显示结果
-            let successCount = 0;
-            this.accountProxyLists.forEach((proxyList, accountIndex) => {
-                const account = this.accounts[accountIndex];
-                const validProxies = proxyList.filter(p => p.server !== 'placeholder');
-                if (validProxies.length > 0) {
-                    successCount++;
-                    console.log(`   账户 ${account.name}:`);
-                    validProxies.forEach((proxy, proxyIndex) => {
-                        console.log(`     ${proxyIndex + 1}. ${proxy.server}:${proxy.port} (${proxy.validatedIP})`);
-                    });
-                }
-            });
+            // 预先获取并验证共享代理IP
+            const sharedProxy = await this.sharedProxyManager.refreshProxy();
             
-            console.log(`📊 代理模式准备完成: ${successCount}/${this.accounts.length} 个账户获得有效代理`);
+            if (sharedProxy) {
+                console.log(`✅ 共享代理IP准备完成: ${sharedProxy.server}:${sharedProxy.port} (${sharedProxy.validatedIP})`);
+                console.log(`📊 代理模式准备完成: 所有 ${this.accounts.length} 个账户将共享使用这个代理IP`);
+                console.log(`⏰ 代理IP有效期: 5分钟，4秒内响应验证`);
+            } else {
+                console.log(`❌ 代理模式准备失败: 无法获取有效的共享代理IP`);
+                throw new Error('无法获取有效的共享代理IP');
+            }
         } else {
             console.log('🔧 直连模式：准备直接请求...');
             
-            // 直连模式：不需要准备代理IP，创建空的代理列表
-            this.accountProxyLists = this.accounts.map(() => []);
-            
+            // 直连模式：不需要准备代理IP
             console.log(`📊 直连模式准备完成: ${this.accounts.length} 个账户将使用本机IP直接请求`);
         }
     }
@@ -1267,7 +1475,7 @@ class SmartXiaomiAcquirer {
         const allSuccessful = this.successfulAccounts.size >= this.accounts.length;
         
         if (allSuccessful) {
-            console.log('🎉 所有账户都已成功抢到补贴！');
+                console.log('🎉 所有账户都已成功抢到补贴！');
         } else if (!this.isRunning) {
             console.log('🛑 用户手动停止了抢购');
         }
@@ -1282,19 +1490,29 @@ class SmartXiaomiAcquirer {
      * @returns {Promise<void>}
      */
     async startAccountAsyncLoop(account) {
-        const accountIndex = this.accounts.indexOf(account);
-        const proxyList = this.accountProxyLists[accountIndex] || [];
-        
-        // 检查代理模式是否有可用代理
+        // 检查代理模式是否有共享代理管理器
         if (this.mode === 'proxy') {
-            const validProxies = proxyList.filter(p => p.server !== 'placeholder');
-            if (validProxies.length === 0) {
-                console.log(`❌ ${account.name}: 没有可用的代理IP，跳过账户`);
+            if (!this.sharedProxyManager) {
+                console.log(`❌ ${account.name}: 共享代理管理器未初始化，跳过账户`);
+                return;
+            }
+            
+            // 检查代理是否有效
+            const proxyStatus = this.sharedProxyManager.getStatus();
+            if (!proxyStatus.hasProxy || !proxyStatus.isValid) {
+                console.log(`❌ ${account.name}: 没有有效的共享代理IP，跳过账户`);
                 return;
             }
         }
         
+        // 为每个账户创建独立的XiaomiSubsidyAcquirer实例，并传递共享代理管理器
         const acquirer = new XiaomiSubsidyAcquirer(this.mode, this.proxyType, this.options);
+        
+        // 如果是代理模式，将共享代理管理器传递给acquirer
+        if (this.mode === 'proxy' && this.sharedProxyManager) {
+            acquirer.sharedProxyManager = this.sharedProxyManager;
+        }
+        
         let attemptCount = 0;
         
         // 单个账户的异步循环抢购，100ms间隔重试
@@ -1302,7 +1520,7 @@ class SmartXiaomiAcquirer {
             attemptCount++;
             
             try {
-                const result = await acquirer.acquireSubsidy(account, proxyList);
+                const result = await acquirer.acquireSubsidy(account);
                 
                 if (result.success) {
                     this.successfulAccounts.add(account.phone);
@@ -1334,36 +1552,44 @@ class SmartXiaomiAcquirer {
         
         // 启动所有账户的抢购任务
         remainingAccounts.forEach((account) => {
-            if (this.successfulAccounts.has(account.phone)) {
+                if (this.successfulAccounts.has(account.phone)) {
                 return; // 已成功，跳过
-            }
-            
-            // 根据模式处理
-            const accountIndex = this.accounts.indexOf(account);
-            const proxyList = this.accountProxyLists[accountIndex] || [];
-            
-            if (this.mode === 'proxy') {
-                // 代理模式：检查是否有可用代理
-                const validProxies = proxyList.filter(p => p.server !== 'placeholder');
-                if (validProxies.length === 0) {
-                    console.log(`❌ ${account.name}: 没有可用的代理IP`);
-                    roundResults.push({
-                        success: false,
-                        account: account,
-                        error: '没有可用的代理IP',
-                        timestamp: new Date().toISOString()
-                    });
-                    return;
                 }
-            }
+                
+                // 根据模式处理
+                if (this.mode === 'proxy') {
+                    // 代理模式：检查共享代理管理器是否可用
+                    if (!this.sharedProxyManager) {
+                        console.log(`❌ ${account.name}: 共享代理管理器未初始化`);
+                        roundResults.push({
+                            success: false,
+                            account: account,
+                            error: '共享代理管理器未初始化',
+                            timestamp: new Date().toISOString()
+                        });
+                        return;
+                    }
+                    
+                    const proxyStatus = this.sharedProxyManager.getStatus();
+                    if (!proxyStatus.hasProxy || !proxyStatus.isValid) {
+                        console.log(`❌ ${account.name}: 没有有效的共享代理IP`);
+                        roundResults.push({
+                            success: false,
+                            account: account,
+                            error: '没有有效的共享代理IP',
+                            timestamp: new Date().toISOString()
+                        });
+                        return;
+                    }
+                }
             
             // 启动异步任务
-            const task = this.executeAccountTask(account, proxyList, round)
+            const task = this.executeAccountTask(account, [], round)
                 .then(result => {
                     runningTasks.delete(account.phone);
                     if (result.success) {
                         this.successfulAccounts.add(result.account.phone);
-                    } else {
+                } else {
                         this.failedAccounts.add(result.account.phone);
                     }
                     return result;
@@ -1392,7 +1618,7 @@ class SmartXiaomiAcquirer {
             taskResults.forEach((result) => {
                 if (result.status === 'fulfilled' && result.value) {
                     roundResults.push(result.value);
-                } else {
+                    } else {
                     console.error(`💥 轮次任务异常:`, result.reason);
                 }
             });
@@ -1402,13 +1628,19 @@ class SmartXiaomiAcquirer {
     /**
      * 执行单个账户任务
      * @param {Object} account - 账户信息
-     * @param {Array} proxyList - 代理列表
+     * @param {Array} proxyList - 代理列表（已弃用，保留兼容性）
      * @param {number} round - 轮次
      * @returns {Promise<Object>} 任务结果
      */
     async executeAccountTask(account, proxyList, round) {
         const acquirer = new XiaomiSubsidyAcquirer(this.mode, this.proxyType, this.options);
-        return await acquirer.acquireSubsidyWithRetry(account, proxyList, true); // 跳过重试，由循环处理
+        
+        // 如果是代理模式，传递共享代理管理器
+        if (this.mode === 'proxy' && this.sharedProxyManager) {
+            acquirer.sharedProxyManager = this.sharedProxyManager;
+        }
+        
+        return await acquirer.acquireSubsidyWithRetry(account, [], true); // 跳过重试，由循环处理
     }
 
     /**
@@ -1558,8 +1790,8 @@ async function selectRegion(rl) {
  */
 async function selectMode(rl) {
     console.log('\n🔧 请选择运行模式:');
-    console.log('1. 直连模式 (direct) - 使用本机IP，支持连接池和并发优化');
-    console.log('2. 代理模式 (proxy) - 使用代理IP，适合正式抢购');
+    console.log('1. 直连模式 (direct) - 使用本机IP，支持并发优化');
+    console.log('2. 代理模式 (proxy) - 共享代理IP，4秒验证，5分钟自动切换');
     
     const choice = await askQuestion(rl, '\n请输入选择 (1-2): ');
     
@@ -1596,6 +1828,12 @@ async function selectMode(rl) {
             
             const proxyChoice = await askQuestion(rl, '请输入选择 (1-2): ');
             proxyType = proxyChoice === '2' ? 2 : 1;
+            
+            console.log('\n🌐 共享代理模式配置说明:');
+            console.log('📝 注意: 所有账户将共享使用一个代理IP');
+            console.log('⏱️ 代理IP验证: 4秒内响应超时将被替换');
+            console.log('🔄 自动切换: 代理IP每5分钟自动过期并切换新IP');
+            console.log('💡 优势: 提高效率，降低成本，避免IP浪费');
             break;
         default:
             console.log('⚠️ 无效选择，使用默认直连模式');
@@ -1761,8 +1999,8 @@ function showHelp() {
 
 📊 模式说明:
   🔗 直连模式: 每个账户单次请求，使用本机IP，适合测试
-  🌐 代理模式: 每个账户使用3个代理IP无阻塞并发请求，适合正式抢购
-  ⚡ 无阻塞并发: 使用Promise.race实现真正的无阻塞，成功结果立即返回
+  🌐 代理模式: 所有账户共享一个代理IP，4秒内响应验证，5分钟自动切换
+  ⚡ 共享代理: 所有账户共用同一代理IP，IP过期自动切换，提高效率降低成本
 
 💡 地区筛选说明:
   系统会根据选择的地区自动筛选出相同regionId的账户进行抢购，避免IP浪费
@@ -1857,4 +2095,4 @@ if (process.argv[1] === __filename) {
 }
 
 // 导出类和函数
-export { XiaomiSubsidyAcquirer, SmartXiaomiAcquirer };
+export { XiaomiSubsidyAcquirer, SmartXiaomiAcquirer, SharedProxyManager };
