@@ -71,10 +71,10 @@ async function fetchOnlineUserAccounts(page = 1, limit = 20) {
         
         const url = `${ONLINE_API_CONFIG.baseURL}${ONLINE_API_CONFIG.endpoint}`;
         const params = {
-            page: page,
-            limit: limit,
+            page,
+            limit,
             is_success:"false",
-            // name:'tdy'
+            name:'tdy'
         };
         
         const response = await axios.get(url, { 
@@ -462,8 +462,16 @@ class StatusUpdateService {
  */
 class XiaomiSubsidyAcquirer {
     constructor(mode = 'direct', proxyType = 1, options = {}) {
+        // 原接口配置
         this.baseURL = 'https://shop-api.retail.mi.com';
         this.endpoint = '/mtop/navi/saury/subsidy/fetch';
+        
+        // 新接口配置 - 双接口抢购
+        this.newBaseURL = 'https://xiaomishop.retail.mi.com';
+        this.newEndpoint = '/mtop/xiaomishop/product/govSubsidy/fetch';
+        this.dualApiEnabled = true; // 启用双接口抢购
+        this.dualApiDelay = 100; // 新接口延迟100ms调用
+        
         this.maxRetries = 3;
         this.retryDelay = 100; // 所有模式统一使用100ms重试间隔
         this.batchSize = 10; // 批量处理大小
@@ -506,7 +514,7 @@ class XiaomiSubsidyAcquirer {
     }
 
     /**
-     * 创建请求配置
+     * 创建原接口请求配置
      * @param {Object} accountInfo - 账户信息
      * @param {Object} proxyInfo - 代理信息
      * @returns {Object} axios配置
@@ -550,6 +558,81 @@ class XiaomiSubsidyAcquirer {
                     "cateCode": cateCode || "B01",
                     "regionId": regionId || "10",
                     "activityCategory": activityCategory || "100"
+                }
+            ],
+            timeout: 30000 // 30秒超时
+        };
+
+        // 根据模式决定是否使用代理
+        if (this.mode === 'proxy' && proxyInfo && proxyInfo.server && proxyInfo.port && proxyInfo.server !== 'placeholder') {
+            // 代理模式：使用代理IP
+            const proxyUrl = `http://${proxyInfo.server}:${proxyInfo.port}`;
+            config.httpsAgent = new HttpsProxyAgent(proxyUrl);
+            config.httpAgent = new HttpsProxyAgent(proxyUrl);
+        }
+
+        return config;
+    }
+
+    /**
+     * 创建新接口请求配置（双接口抢购）
+     * @param {Object} accountInfo - 账户信息
+     * @param {Object} proxyInfo - 代理信息
+     * @returns {Object} axios配置
+     */
+    createNewRequestConfig(accountInfo, proxyInfo) {
+        // 从账户信息中提取请求参数
+        const serviceToken = accountInfo.serviceToken;
+        const userId = accountInfo.userId;
+        const dId = accountInfo.dId;
+        const dModel = accountInfo.dModel;
+        const sentryTrace = accountInfo.sentryTrace;
+        const baggage = accountInfo.baggage;
+        
+        // 从账户信息中提取请求体参数
+        const cateCode = accountInfo.cateCode;
+        const regionId = accountInfo.regionId;
+        const activityCategory = accountInfo.activityCategory;
+        
+        const config = {
+            method: 'POST',
+            url: `${this.newBaseURL}${this.newEndpoint}`,
+            headers: {
+                'Host': 'xiaomishop.retail.mi.com',
+                'dtoken': '',
+                'Referer': 'https://xiaomishop.retail.mi.com',
+                'x-mishop-app-source': 'front-RN',
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+                'd-id': dId || 'OXBJOW5jM2cyZDd2bUh2TTJncDFHS0pCTFl3SUx1QUhEcXFMRytRN2x6aURaK3NSVXV2aHZmUGR6UWtoWDhIUg==',
+                'x-user-agent': 'channel/mishop platform/mishop.ios',
+                'Cookie': `serviceToken=${serviceToken}; userId=${userId}`,
+                'ai-recommend-status': '0',
+                'mishop-model': 'iPhone17,1',
+                'magic-device-id': '20251007170531339f86302c8846f111e7c3819ff39cd9008ee21bc4797a9b',
+                'locale': 'CN',
+                'baggage': baggage || 'sentry-environment=RELEASE,sentry-public_key=ee0a98b8e8e3417c89db4f9fd258ef62,sentry-release=com.xiaomi.mishop%405.2.257%2B2509112112,sentry-sample_rate=1,sentry-trace_id=1c1a0cfc529c49d1bddbd35f5fb25a6a,sentry-transaction=MSNewMainViewController',
+                'mishop-client-id': '180100031055',
+                'device-id': 'E6259B95C513B07CC07227E4828E4A71',
+                'network-carrier': '6553565535',
+                'ios-version': 'system=18.6.2&device=iPhone17,1',
+                'ios-app-version': '5.2.257',
+                'Connection': 'keep-alive',
+                'mishop-channel-id': '',
+                'Accept-Language': 'zh-CN,zh-Hans;q=0.9',
+                'device-oaid': '9pI9nc3g2d7vmHvM2gp1GKJBLYwILuAHDqqLG+Q7lziDZ+sRUuvhvfPdzQkhX8HR',
+                'Accept': '*/*',
+                'Content-Type': 'application/json',
+                'mishop-client-versioncode': '5.2.257',
+                'sentry-trace': sentryTrace || '1c1a0cfc529c49d1bddbd35f5fb25a6a-accc6dfdf19e4fba-1',
+                'd-model': dModel || 'aVBob25lMTcsMQ==',
+                'Accept-Encoding': 'gzip, deflate, br'
+            },
+            data: [
+                {},
+                {
+                    "regionId": parseInt(regionId) || 10,
+                    "activityCategory": parseInt(activityCategory) || 100,
+                    "cateCode": cateCode || "B01"
                 }
             ],
             timeout: 30000 // 30秒超时
@@ -785,7 +868,7 @@ class XiaomiSubsidyAcquirer {
     }
 
     /**
-     * 执行单次请求
+     * 执行单次请求（双接口同时抢购）
      * @param {Object} accountInfo - 账户信息
      * @param {Object} proxyInfo - 代理信息
      * @param {number} requestIndex - 请求序号
@@ -793,58 +876,163 @@ class XiaomiSubsidyAcquirer {
      */
     async executeSingleRequest(accountInfo, proxyInfo, requestIndex) {
         const startTime = Date.now();
+        const currentTime = new Date().toLocaleTimeString();
         
         try {
-            const config = this.createRequestConfig(accountInfo, proxyInfo);
+            // 执行原接口请求
+            const originalConfig = this.createRequestConfig(accountInfo, proxyInfo);
+            const originalResponse = await axios(originalConfig);
             
-            // 所有请求都使用独立连接（连接池已禁用）
-            let response;
-            response = await axios(config);
-
-            const duration = Date.now() - startTime;
-
-            // 解析响应
-            const result = {
-                success: true,
-                account: accountInfo,
-                proxy: proxyInfo,
-                response: response.data,
-                requestIndex: requestIndex,
-                duration: duration,
-                timestamp: new Date().toISOString(),
-                connectionPoolUsed: false
-            };
-
-            // 使用改进的抢券成功判断逻辑
-            const isSuccessful = this.isRushSuccessful(response.data);
-            const currentTime = new Date().toLocaleTimeString();
-            
-            if (isSuccessful) {
-                    result.success = true;
-                    result.message = '抢券成功';
-                    result.tips = '';
-                    
-                // 使用简洁的日志格式，参考RushPurchase的格式
-                console.log(`${currentTime} 🎉 ${accountInfo.name}(${accountInfo.phone}) 抢券成功！`);
-                
-                // 处理抢购成功后的操作
-                await this.handleSuccess(accountInfo, response.data);
-                    
-                } else {
-                    result.success = false;
-                const tips = response.data && response.data.data && response.data.data.tips;
-                const tipsMessage = tips || (response.data.data && response.data.data.message) || response.data.message || '抢券失败';
-                result.error = tipsMessage;
-                
-                // 使用简洁的日志格式
-                console.log(`${currentTime} ⚠️  ${accountInfo.name}: ${tipsMessage}`);
+            // 检查原接口结果并立即输出日志
+            const originalSuccess = this.isRushSuccessful(originalResponse.data);
+            if (originalSuccess) {
+                console.log(`${currentTime} 🎉 ${accountInfo.name}(${accountInfo.phone}) 原接口抢券成功！`);
+                await this.handleSuccess(accountInfo, originalResponse.data);
+                return {
+                    success: true,
+                    account: accountInfo,
+                    proxy: proxyInfo,
+                    response: originalResponse.data,
+                    requestIndex: requestIndex,
+                    duration: Date.now() - startTime,
+                    timestamp: new Date().toISOString(),
+                    connectionPoolUsed: false,
+                    apiUsed: 'original',
+                    message: '原接口抢券成功',
+                    originalResult: originalResponse.data
+                };
+            } else {
+                const originalError = this.getOriginalApiError(originalResponse.data);
+                console.log(`${currentTime} ⚠️  ${accountInfo.name}-${accountInfo.phone}: 原接口失败 - ${originalError}`);
             }
-
-            return result;
+            
+            // 无论原接口是否成功，都要在100ms后调用新接口
+            if (this.dualApiEnabled) {
+                // 等待100ms
+                await new Promise(resolve => setTimeout(resolve, this.dualApiDelay));
+                
+                try {
+                    // 执行新接口请求
+                    const newConfig = this.createNewRequestConfig(accountInfo, proxyInfo);
+                    const newResponse = await axios(newConfig);
+                    
+                    // 检查新接口结果并立即输出日志
+                    const newSuccess = this.isNewApiSuccessful(newResponse.data);
+                    if (newSuccess) {
+                        console.log(`${currentTime} 🎉 ${accountInfo.name}(${accountInfo.phone}) 新接口抢券成功！`);
+                        await this.handleSuccess(accountInfo, newResponse.data);
+                        return {
+                            success: true,
+                            account: accountInfo,
+                            proxy: proxyInfo,
+                            response: newResponse.data,
+                            requestIndex: requestIndex,
+                            duration: Date.now() - startTime,
+                            timestamp: new Date().toISOString(),
+                            connectionPoolUsed: false,
+                            apiUsed: 'new',
+                            message: '新接口抢券成功',
+                            originalResult: originalResponse.data,
+                            newResult: newResponse.data
+                        };
+                    } else {
+                        const newTips = newResponse.data && newResponse.data.data && newResponse.data.data.tips;
+                        const newError = newTips || (newResponse.data.data && newResponse.data.data.message) || newResponse.data.message || '新接口抢券失败';
+                        console.log(`${currentTime} ⚠️  ${accountInfo.name}: 新接口失败 - ${newError}`);
+                    }
+                    
+                    // 两个接口都失败
+                    const originalError = this.getOriginalApiError(originalResponse.data);
+                    const newTips = newResponse.data && newResponse.data.data && newResponse.data.data.tips;
+                    const newError = newTips || (newResponse.data.data && newResponse.data.data.message) || newResponse.data.message || '新接口抢券失败';
+                    
+                    return {
+                        success: false,
+                        account: accountInfo,
+                        proxy: proxyInfo,
+                        requestIndex: requestIndex,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString(),
+                        connectionPoolUsed: false,
+                        apiUsed: 'both',
+                        error: `双接口都失败 - 原接口: ${originalError}, 新接口: ${newError}`,
+                        originalResult: originalResponse.data,
+                        newResult: newResponse.data
+                    };
+                    
+                } catch (newError) {
+                    // 新接口请求异常
+                    console.log(`${currentTime} ❌ ${accountInfo.name}: 新接口异常 - ${newError.message}`);
+                    
+                    if (originalSuccess) {
+                        // 原接口成功，新接口异常
+                        return {
+                            success: true,
+                            account: accountInfo,
+                            proxy: proxyInfo,
+                            response: originalResponse.data,
+                            requestIndex: requestIndex,
+                            duration: Date.now() - startTime,
+                            timestamp: new Date().toISOString(),
+                            connectionPoolUsed: false,
+                            apiUsed: 'original',
+                            message: '原接口抢券成功，新接口异常',
+                            originalResult: originalResponse.data,
+                            newError: newError.message
+                        };
+                    } else {
+                        // 原接口失败，新接口异常
+                        const originalError = this.getOriginalApiError(originalResponse.data);
+                        return {
+                            success: false,
+                            account: accountInfo,
+                            proxy: proxyInfo,
+                            requestIndex: requestIndex,
+                            duration: Date.now() - startTime,
+                            timestamp: new Date().toISOString(),
+                            connectionPoolUsed: false,
+                            apiUsed: 'both',
+                            error: `双接口都失败 - 原接口: ${originalError}, 新接口异常: ${newError.message}`,
+                            originalResult: originalResponse.data,
+                            newError: newError.message
+                        };
+                    }
+                }
+            } else {
+                // 双接口模式未启用，只使用原接口
+                if (originalSuccess) {
+                    return {
+                        success: true,
+                        account: accountInfo,
+                        proxy: proxyInfo,
+                        response: originalResponse.data,
+                        requestIndex: requestIndex,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString(),
+                        connectionPoolUsed: false,
+                        apiUsed: 'original',
+                        message: '原接口抢券成功'
+                    };
+                } else {
+                    const tips = originalResponse.data && originalResponse.data.data && originalResponse.data.data.tips;
+                    const tipsMessage = tips || (originalResponse.data.data && originalResponse.data.data.message) || originalResponse.data.message || '抢券失败';
+                    
+                    return {
+                        success: false,
+                        account: accountInfo,
+                        proxy: proxyInfo,
+                        requestIndex: requestIndex,
+                        duration: Date.now() - startTime,
+                        timestamp: new Date().toISOString(),
+                        connectionPoolUsed: false,
+                        apiUsed: 'original',
+                        error: tipsMessage
+                    };
+                }
+            }
 
         } catch (error) {
             const duration = Date.now() - startTime;
-            const currentTime = new Date().toLocaleTimeString();
             
             const result = {
                 success: false,
@@ -855,18 +1043,19 @@ class XiaomiSubsidyAcquirer {
                 duration: duration,
                 timestamp: new Date().toISOString(),
                 isNetworkError: isNetworkError(error),
-                connectionPoolUsed: false
+                connectionPoolUsed: false,
+                apiUsed: 'original'
             };
 
             // 使用简洁的日志格式输出错误
-            console.log(`${currentTime} ❌ ${accountInfo.name}: 请求失败 - ${error.message}`);
+            console.log(`${currentTime} ❌ ${accountInfo.name}: 原接口请求失败 - ${error.message}`);
 
             return result;
         }
     }
 
     /**
-     * 判断是否抢购成功
+     * 判断是否抢购成功（原接口）
      * @param {Object} responseData - API响应数据
      * @returns {boolean} 是否成功
      */
@@ -881,6 +1070,39 @@ class XiaomiSubsidyAcquirer {
                             responseData.data.tips === undefined);
         
         return isCodeSuccess && isTipsEmpty;
+    }
+
+    /**
+     * 判断新接口是否抢购成功
+     * @param {Object} responseData - 新接口API响应数据
+     * @returns {boolean} 是否成功
+     */
+    isNewApiSuccessful(responseData) {
+        if (!responseData) return false;
+        
+        // 新接口成功判断：只有当code=0 && tips为空字符串才表示成功
+        const isCodeSuccess = responseData.code === 0 || responseData.code === '0';
+        const isTipsEmpty = responseData.data && 
+                           (responseData.data.tips === '' || 
+                            responseData.data.tips === null || 
+                            responseData.data.tips === undefined);
+        
+        return isCodeSuccess && isTipsEmpty;
+    }
+
+    /**
+     * 获取原接口错误信息
+     * @param {Object} responseData - 原接口响应数据
+     * @returns {string} 错误信息
+     */
+    getOriginalApiError(responseData) {
+        if (!responseData) return '无响应数据';
+        
+        const tips = responseData.data && responseData.data.tips;
+        const message = responseData.data && responseData.data.message;
+        const errorMessage = responseData.message;
+        
+        return tips || message || errorMessage || '未知错误';
     }
 
     /**
@@ -1219,23 +1441,37 @@ class XiaomiSubsidyAcquirer {
         const failed = total - success;
         const successRate = total > 0 ? (success / total * 100).toFixed(2) : 0;
 
+        // 统计双接口使用情况
+        const originalApiSuccess = results.filter(r => r.success && r.apiUsed === 'original').length;
+        const newApiSuccess = results.filter(r => r.success && r.apiUsed === 'new').length;
+        const bothApiFailed = results.filter(r => !r.success && r.apiUsed === 'both').length;
+
         console.log('\n📊 执行统计:');
         console.log(`   总请求数: ${total}`);
         console.log(`   成功数: ${success}`);
         console.log(`   失败数: ${failed}`);
         console.log(`   成功率: ${successRate}%`);
 
+        if (this.dualApiEnabled) {
+            console.log('\n🔄 双接口抢购统计:');
+            console.log(`   原接口成功: ${originalApiSuccess}`);
+            console.log(`   新接口成功: ${newApiSuccess}`);
+            console.log(`   双接口都失败: ${bothApiFailed}`);
+        }
+
         if (success > 0) {
             console.log('\n🎉 成功账户:');
             results.filter(r => r.success).forEach(result => {
-                console.log(`   ✅ ${result.account.name} (${result.account.phone})`);
+                const apiInfo = result.apiUsed === 'original' ? '(原接口)' : result.apiUsed === 'new' ? '(新接口)' : '';
+                console.log(`   ✅ ${result.account.name} (${result.account.phone}) ${apiInfo}`);
             });
         }
 
         if (failed > 0) {
             console.log('\n😞 失败账户:');
             results.filter(r => !r.success).forEach(result => {
-                console.log(`   ❌ ${result.account.name} (${result.account.phone}): ${result.error}`);
+                const apiInfo = result.apiUsed === 'original' ? '(原接口)' : result.apiUsed === 'new' ? '(新接口)' : result.apiUsed === 'both' ? '(双接口)' : '';
+                console.log(`   ❌ ${result.account.name} (${result.account.phone}) ${apiInfo}: ${result.error}`);
             });
         }
     }
@@ -2001,6 +2237,12 @@ function showHelp() {
   🔗 直连模式: 每个账户单次请求，使用本机IP，适合测试
   🌐 代理模式: 所有账户共享一个代理IP，4秒内响应验证，5分钟自动切换
   ⚡ 共享代理: 所有账户共用同一代理IP，IP过期自动切换，提高效率降低成本
+
+🔄 双接口抢购功能:
+  🎯 同时双接口: 系统会先调用原接口，无论结果如何都会在100ms后调用新接口
+  📈 提高命中率: 双接口同时抢购，大幅提高抢券成功率
+  🔍 智能判断: 自动判断哪个接口成功，只要有一个成功就算成功
+  📊 详细统计: 显示原接口和新接口的成功率统计
 
 💡 地区筛选说明:
   系统会根据选择的地区自动筛选出相同regionId的账户进行抢购，避免IP浪费
